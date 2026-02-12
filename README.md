@@ -33,6 +33,8 @@ hooky run -- claude --help
 hooky run -- bash -lc "git status"
 ```
 
+`hooky doctor` and `hooky install-shims` will best-effort add `.hooky/` and `.hooky-log.jsonl` to `.gitignore` if missing.
+
 ## Sample rejected command output
 
 Example: blocked by a native rule (`--no-verify`).

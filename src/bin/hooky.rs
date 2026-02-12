@@ -6,6 +6,7 @@ use hooky::hooky::decision::{Decision, DecisionKind};
 use hooky::hooky::{doctor, evaluator};
 use hooky::types::response::CliResponse;
 use regex::Regex;
+use std::collections::BTreeSet;
 use std::env;
 use std::ffi::OsStr;
 use std::fmt::Write as _;
@@ -17,6 +18,7 @@ use std::process::{Command, Stdio};
 const DEFAULT_CONFIG_PATH: &str = ".hooky.yml";
 const DEFAULT_SHIMS_DIR: &str = ".hooky/shims";
 const SHIM_COMMANDS: [&str; 6] = ["git", "rm", "mv", "curl", "bash", "sh"];
+const REQUIRED_GITIGNORE_PATTERNS: [&str; 2] = [".hooky/", ".hooky-log.jsonl"];
 
 #[derive(Parser)]
 #[command(name = "hooky")]
@@ -198,6 +200,8 @@ fn program_exists(program: &str) -> bool {
 }
 
 fn install_shims_command(dir: Option<&Path>, force: bool) -> Result<()> {
+    maybe_sync_gitignore_patterns();
+
     let current_exe = std::env::current_exe().context("failed to resolve current executable")?;
     let target_dir = dir.map_or_else(|| PathBuf::from(DEFAULT_SHIMS_DIR), Path::to_path_buf);
 
@@ -383,6 +387,8 @@ fn resolve_config_path(config_path: Option<&Path>) -> PathBuf {
 }
 
 fn run_doctor(config_path: Option<&Path>) -> Result<()> {
+    maybe_sync_gitignore_patterns();
+
     let config = Config::load(config_path)?;
     let report = doctor::run(&config)?;
     let response = CliResponse::success(report);
@@ -534,6 +540,65 @@ fn set_exit_code_from_decision(decision: &Decision) {
     }
 }
 
+fn maybe_sync_gitignore_patterns() {
+    match ensure_gitignore_entries(Path::new(".gitignore"), &REQUIRED_GITIGNORE_PATTERNS) {
+        Ok(true) => {
+            eprintln!(
+                "hooky: updated .gitignore with runtime artifacts (.hooky/, .hooky-log.jsonl)"
+            );
+        }
+        Ok(false) => {}
+        Err(err) => {
+            eprintln!("hooky warning: failed to update .gitignore: {err}");
+        }
+    }
+}
+
+fn ensure_gitignore_entries(path: &Path, entries: &[&str]) -> Result<bool> {
+    let existing = if path.exists() {
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?
+    } else {
+        String::new()
+    };
+
+    let existing_patterns = existing
+        .lines()
+        .map(normalize_gitignore_pattern)
+        .filter(|pattern| !pattern.is_empty())
+        .collect::<BTreeSet<String>>();
+
+    let missing = entries
+        .iter()
+        .copied()
+        .filter(|entry| !existing_patterns.contains(&normalize_gitignore_pattern(entry)))
+        .collect::<Vec<&str>>();
+
+    if missing.is_empty() {
+        return Ok(false);
+    }
+
+    let mut updated = existing;
+    if !updated.is_empty() && !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+    for entry in missing {
+        updated.push_str(entry);
+        updated.push('\n');
+    }
+
+    fs::write(path, updated).with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(true)
+}
+
+fn normalize_gitignore_pattern(pattern: &str) -> String {
+    pattern
+        .trim()
+        .trim_start_matches('/')
+        .split('#')
+        .next()
+        .map_or_else(String::new, |value| value.trim().to_string())
+}
+
 #[derive(serde::Serialize)]
 struct CheckResponse {
     command: String,
@@ -610,5 +675,32 @@ mod tests {
                 .expect("script generation");
 
         assert!(script.starts_with("#!/bin/bash\n"));
+    }
+
+    #[test]
+    fn ensure_gitignore_entries_appends_missing_patterns() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let gitignore_path = temp.path().join(".gitignore");
+        fs::write(&gitignore_path, "/target\n").expect("gitignore should be created");
+
+        let changed = ensure_gitignore_entries(&gitignore_path, &REQUIRED_GITIGNORE_PATTERNS)
+            .expect("gitignore update should succeed");
+        assert!(changed);
+
+        let content = fs::read_to_string(gitignore_path).expect("gitignore should be readable");
+        assert!(content.contains(".hooky/\n"));
+        assert!(content.contains(".hooky-log.jsonl\n"));
+    }
+
+    #[test]
+    fn ensure_gitignore_entries_is_idempotent_for_slash_prefixed_patterns() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let gitignore_path = temp.path().join(".gitignore");
+        fs::write(&gitignore_path, "/target\n/.hooky/\n/.hooky-log.jsonl\n")
+            .expect("gitignore should be created");
+
+        let changed = ensure_gitignore_entries(&gitignore_path, &REQUIRED_GITIGNORE_PATTERNS)
+            .expect("gitignore update should succeed");
+        assert!(!changed);
     }
 }
