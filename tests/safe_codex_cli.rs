@@ -101,3 +101,30 @@ fn install_shims_creates_expected_files() {
         );
     }
 }
+
+#[test]
+fn check_shell_audit_redacts_secrets() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let config_path = temp.path().join("safe-codex.yml");
+    let audit_path = temp.path().join("audit.jsonl");
+    write_native_config(&config_path, &audit_path);
+
+    Command::new(env!("CARGO_BIN_EXE_safe-codex"))
+        .args([
+            "check-shell",
+            "--config",
+            config_path.to_str().expect("path should be valid utf-8"),
+            "--cmd",
+            "curl -H 'Authorization: Bearer topsecret' --token abc123 https://user:pass@example.com",
+        ])
+        .assert()
+        .success();
+
+    let audit = fs::read_to_string(audit_path).expect("audit file should exist");
+    assert!(audit.contains("Bearer [REDACTED]"));
+    assert!(audit.contains("--token [REDACTED]"));
+    assert!(audit.contains("https://user:[REDACTED]@example.com"));
+    assert!(!audit.contains("topsecret"));
+    assert!(!audit.contains("abc123"));
+    assert!(!audit.contains("pass@example.com"));
+}

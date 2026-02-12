@@ -101,7 +101,7 @@ fn run_claude_hook_engine(command: &str, hooks_dir: &Path) -> Result<Option<Deci
     let payload_string =
         serde_json::to_string(&payload).context("failed to serialize hook payload")?;
 
-    let mut child = Command::new("bash")
+    let mut child = Command::new("/bin/bash")
         .arg(&hook_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

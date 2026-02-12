@@ -7,9 +7,21 @@ repos:
       - id: check-yaml
       - id: check-merge-conflict
       - id: check-added-large-files
+        args: ['--maxkb=5000']
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.28.0
+    hooks:
+      - id: gitleaks
 
   - repo: local
     hooks:
+      - id: trufflehog-manual
+        name: trufflehog (manual)
+        entry: bash -lc 'command -v trufflehog >/dev/null 2>&1 && trufflehog git file://. --since-commit HEAD --results=verified --fail --trust-local-git-config || { echo "trufflehog not installed; skipping manual hook"; exit 0; }'
+        language: system
+        pass_filenames: false
+        stages: [manual]
       - id: cargo-fmt
         name: cargo fmt --check
         entry: cargo fmt --all -- --check

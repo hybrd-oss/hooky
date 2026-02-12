@@ -1,10 +1,13 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand};
+use regex::Regex;
 use safe_codex::safe_codex::audit::{append_event, AuditEvent};
 use safe_codex::safe_codex::config::Config;
 use safe_codex::safe_codex::decision::{Decision, DecisionKind};
 use safe_codex::safe_codex::{doctor, evaluator};
 use safe_codex::types::response::CliResponse;
+use std::env;
+use std::ffi::OsStr;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -206,7 +209,7 @@ fn install_shims(dir: &Path, force: bool, safe_codex_bin: &Path) -> Result<usize
 
     let mut installed = 1usize;
     for command_name in SHIM_COMMANDS {
-        let real_path = resolve_binary_path(command_name)
+        let real_path = resolve_binary_path(command_name, dir)
             .with_context(|| format!("failed to resolve binary path for {command_name}"))?;
         let shim_script = build_command_shim_script(command_name, &real_path, safe_codex_bin)?;
         let shim_path = dir.join(command_name);
@@ -229,8 +232,12 @@ set -euo pipefail
 SAFE_CODEX_BIN=\"${{SAFE_CODEX_BIN:-{bin}}}\"
 SAFE_CODEX_CONFIG=\"${{SAFE_CODEX_CONFIG:-{DEFAULT_CONFIG_PATH}}}\"
 
-if [[ \"${{1:-}}\" == \"-lc\" && -n \"${{2:-}}\" ]]; then
+if [[ \"${{1:-}}\" == \"-c\" && -n \"${{2:-}}\" ]]; then
   \"$SAFE_CODEX_BIN\" check-shell --quiet --config \"$SAFE_CODEX_CONFIG\" --cmd \"$2\"
+elif [[ \"${{1:-}}\" == \"-lc\" && -n \"${{2:-}}\" ]]; then
+  \"$SAFE_CODEX_BIN\" check-shell --quiet --config \"$SAFE_CODEX_CONFIG\" --cmd \"$2\"
+elif [[ \"${{1:-}}\" == \"-l\" && \"${{2:-}}\" == \"-c\" && -n \"${{3:-}}\" ]]; then
+  \"$SAFE_CODEX_BIN\" check-shell --quiet --config \"$SAFE_CODEX_CONFIG\" --cmd \"$3\"
 fi
 
 exec /bin/bash \"$@\"
@@ -288,22 +295,73 @@ fn write_executable_script(path: &Path, contents: &str, force: bool) -> Result<(
     Ok(())
 }
 
-fn resolve_binary_path(command_name: &str) -> Result<PathBuf> {
-    let output = Command::new("which")
-        .arg(command_name)
-        .output()
-        .with_context(|| format!("failed to run which for {command_name}"))?;
+fn resolve_binary_path(command_name: &str, shims_dir: &Path) -> Result<PathBuf> {
+    resolve_binary_path_with_path(command_name, env::var_os("PATH").as_deref(), shims_dir)
+}
 
-    if !output.status.success() {
-        bail!("binary not found: {command_name}");
+fn resolve_binary_path_with_path(
+    command_name: &str,
+    path_env: Option<&OsStr>,
+    shims_dir: &Path,
+) -> Result<PathBuf> {
+    let path_env = path_env.ok_or_else(|| anyhow!("PATH is not set"))?;
+    let shims_canonical = fs::canonicalize(shims_dir).unwrap_or_else(|_| shims_dir.to_path_buf());
+
+    let mut trusted_candidates = Vec::new();
+    let mut fallback_candidates = Vec::new();
+
+    for entry in env::split_paths(path_env) {
+        if !entry.is_absolute() {
+            continue;
+        }
+
+        let entry_canonical = fs::canonicalize(&entry).unwrap_or(entry.clone());
+        if entry_canonical.starts_with(&shims_canonical) {
+            continue;
+        }
+
+        let candidate = entry.join(command_name);
+        if !is_executable_file(&candidate) {
+            continue;
+        }
+
+        let candidate_canonical = fs::canonicalize(&candidate).unwrap_or(candidate.clone());
+        if candidate_canonical.starts_with(&shims_canonical) {
+            continue;
+        }
+
+        if is_trusted_bin_path(&candidate_canonical) {
+            trusted_candidates.push(candidate_canonical);
+        } else {
+            fallback_candidates.push(candidate_canonical);
+        }
     }
 
-    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if path.is_empty() {
-        bail!("which returned empty path for {command_name}");
+    if let Some(first) = trusted_candidates.into_iter().next() {
+        return Ok(first);
+    }
+    if let Some(first) = fallback_candidates.into_iter().next() {
+        return Ok(first);
     }
 
-    Ok(PathBuf::from(path))
+    bail!("binary not found in PATH: {command_name}")
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+
+    if !metadata.is_file() {
+        return false;
+    }
+
+    metadata.permissions().mode() & 0o111 != 0
+}
+
+fn is_trusted_bin_path(path: &Path) -> bool {
+    const TRUSTED_DIRS: [&str; 4] = ["/usr/bin", "/bin", "/usr/local/bin", "/opt/homebrew/bin"];
+    TRUSTED_DIRS.iter().any(|trusted| path.starts_with(trusted))
 }
 
 fn resolve_config_path(config_path: Option<&Path>) -> PathBuf {
@@ -389,11 +447,43 @@ fn write_audit(config: &Config, command: &str, decision: &Decision) -> Result<()
     let event = AuditEvent {
         timestamp: chrono::Utc::now(),
         event: "command_check".to_string(),
-        command: command.to_string(),
+        command: redact_command_for_audit(command),
         decision: decision.clone(),
     };
 
     append_event(&config.audit.log_path, &event)
+}
+
+fn redact_command_for_audit(command: &str) -> String {
+    let mut redacted = command.to_string();
+
+    let patterns: [(&str, &str); 5] = [
+        (
+            r#"(?i)(--?(?:token|password|passwd|secret|api[-_]?key|access[-_]?key|auth[-_]?token))(=|\s+)("[^"]*"|'[^']*'|\S+)"#,
+            "$1$2[REDACTED]",
+        ),
+        (
+            r#"(?i)\b(AWS_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|GITHUB_TOKEN|TOKEN|PASSWORD|PASSWD|API_KEY|SECRET)=("[^"]*"|'[^']*'|\S+)"#,
+            "$1=[REDACTED]",
+        ),
+        (r"(?i)(authorization:\s*bearer\s+)\S+", "$1[REDACTED]"),
+        (
+            r"(?i)\b([a-z][a-z0-9+.-]*://[^/\s:@]+):([^@/\s]+)@",
+            "$1:[REDACTED]@",
+        ),
+        (
+            r#"(?i)("(?:token|password|secret|api[_-]?key)"\s*:\s*")[^"]*(")"#,
+            "$1[REDACTED]$2",
+        ),
+    ];
+
+    for (pattern, replacement) in patterns {
+        if let Ok(regex) = Regex::new(pattern) {
+            redacted = regex.replace_all(&redacted, replacement).to_string();
+        }
+    }
+
+    redacted
 }
 
 fn fail_closed_decision(error: &str) -> Decision {
@@ -422,4 +512,62 @@ struct CheckResponse {
 struct InstallShimsResponse {
     dir: PathBuf,
     files_installed: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsString;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn redacts_common_secret_patterns() {
+        let command = "curl -H 'Authorization: Bearer abc123' --token abc --password=def https://user:pass@example.com";
+        let redacted = redact_command_for_audit(command);
+
+        assert!(redacted.contains("Bearer [REDACTED]"));
+        assert!(redacted.contains("--token [REDACTED]"));
+        assert!(redacted.contains("--password=[REDACTED]"));
+        assert!(redacted.contains("https://user:[REDACTED]@example.com"));
+        assert!(!redacted.contains("abc123"));
+        assert!(!redacted.contains("pass@example.com"));
+    }
+
+    #[test]
+    fn resolve_binary_path_skips_shims_dir() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let shims_dir = temp.path().join("shims");
+        let safe_bin_dir = temp.path().join("safe-bin");
+        fs::create_dir_all(&shims_dir).expect("shims dir");
+        fs::create_dir_all(&safe_bin_dir).expect("safe bin dir");
+
+        let shim_git = shims_dir.join("git");
+        let safe_git = safe_bin_dir.join("git");
+        fs::write(&shim_git, "#!/bin/sh\n").expect("shim write");
+        fs::write(&safe_git, "#!/bin/sh\n").expect("safe write");
+        fs::set_permissions(&shim_git, fs::Permissions::from_mode(0o755)).expect("shim perms");
+        fs::set_permissions(&safe_git, fs::Permissions::from_mode(0o755)).expect("safe perms");
+
+        let path = OsString::from(format!(
+            "{}:{}",
+            shims_dir.display(),
+            safe_bin_dir.display()
+        ));
+        let resolved =
+            resolve_binary_path_with_path("git", Some(path.as_os_str()), &shims_dir).unwrap();
+
+        let resolved_canonical = fs::canonicalize(resolved).expect("resolved canonical path");
+        let safe_canonical = fs::canonicalize(safe_git).expect("safe canonical path");
+        assert_eq!(resolved_canonical, safe_canonical);
+    }
+
+    #[test]
+    fn safe_shell_script_checks_dash_c_and_dash_lc() {
+        let script =
+            build_safe_shell_script(Path::new("/tmp/safe-codex")).expect("script generation");
+
+        assert!(script.contains("\"${1:-}\" == \"-c\""));
+        assert!(script.contains("\"${1:-}\" == \"-lc\""));
+        assert!(script.contains("\"${1:-}\" == \"-l\" && \"${2:-}\" == \"-c\""));
+    }
 }
