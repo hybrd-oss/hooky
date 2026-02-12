@@ -19,7 +19,7 @@ const SHIM_COMMANDS: [&str; 6] = ["git", "rm", "mv", "curl", "bash", "sh"];
 
 #[derive(Parser)]
 #[command(name = "hooky")]
-#[command(about = "Command safety wrapper and policy evaluator for Codex")]
+#[command(about = "Configurable command firewall for shells, agents, and automation")]
 #[command(version)]
 struct Cli {
     #[command(subcommand)]
@@ -28,7 +28,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Run codex with a guarded shell and command shims
+    /// Run a target program with a guarded shell and command shims
     Run {
         /// Path to .hooky.yml
         #[arg(long)]
@@ -38,9 +38,9 @@ enum Commands {
         #[arg(long)]
         shims_dir: Option<PathBuf>,
 
-        /// Arguments forwarded to codex
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-        codex_args: Vec<String>,
+        /// Target program followed by its arguments
+        #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+        target_and_args: Vec<String>,
     },
 
     /// Install shell and command shims
@@ -118,8 +118,8 @@ fn run() -> Result<()> {
         Commands::Run {
             config,
             shims_dir,
-            codex_args,
-        } => run_codex(config.as_deref(), shims_dir.as_deref(), &codex_args),
+            target_and_args,
+        } => run_program(config.as_deref(), shims_dir.as_deref(), &target_and_args),
         Commands::InstallShims { dir, force } => install_shims_command(dir.as_deref(), force),
         Commands::Doctor { config } => run_doctor(config.as_deref()),
         Commands::CheckShell { cmd, config, quiet } => {
@@ -134,13 +134,17 @@ fn run() -> Result<()> {
     }
 }
 
-fn run_codex(
+fn run_program(
     config_path: Option<&Path>,
     shims_dir: Option<&Path>,
-    codex_args: &[String],
+    target_and_args: &[String],
 ) -> Result<()> {
-    if !evaluator::command_exists("codex") {
-        bail!("codex command not found in PATH");
+    let (program, program_args) = target_and_args
+        .split_first()
+        .ok_or_else(|| anyhow!("no target program provided"))?;
+    let program = program.as_str();
+    if !program_exists(program) {
+        bail!("target program not found in PATH: {program}");
     }
 
     let resolved_config = resolve_config_path(config_path);
@@ -163,8 +167,8 @@ fn run_codex(
     };
 
     let safe_shell = shims_path.join("hooky-shell");
-    let mut cmd = Command::new("codex");
-    cmd.args(codex_args)
+    let mut cmd = Command::new(program);
+    cmd.args(program_args)
         .env("PATH", combined_path)
         .env("SHELL", &safe_shell)
         .env("HOOKY_BIN", &current_exe)
@@ -173,11 +177,21 @@ fn run_codex(
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
 
-    let status = cmd.status().context("failed to start codex")?;
+    let status = cmd
+        .status()
+        .with_context(|| format!("failed to start target program: {program}"))?;
     match status.code() {
         Some(code) => std::process::exit(code),
         None => std::process::exit(1),
     }
+}
+
+fn program_exists(program: &str) -> bool {
+    if program.contains('/') {
+        return Path::new(program).exists();
+    }
+
+    evaluator::command_exists(program)
 }
 
 fn install_shims_command(dir: Option<&Path>, force: bool) -> Result<()> {

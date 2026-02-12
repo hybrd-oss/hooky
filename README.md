@@ -28,7 +28,9 @@ cargo install --path . --force
 hooky doctor
 hooky check-shell --cmd "git commit --no-verify -m test"
 hooky install-shims
-hooky run -- --help
+hooky run -- codex --help
+hooky run -- claude --help
+hooky run -- bash -lc "git status"
 ```
 
 ## Sample rejected command output
@@ -69,7 +71,7 @@ Example: rewrite rule rejected in deny-only mode (`--force`).
 
 ## How interception works
 
-1. `hooky run` starts Codex with a guarded environment:
+1. `hooky run -- <program> [args...]` starts the target program with a guarded environment:
    - Prepends `.hooky/shims` to `PATH`
    - Sets `SHELL` to the generated `hooky-shell` shim
 2. `hooky install-shims` creates wrapper scripts for `git`, `rm`, `mv`, `curl`, `bash`, and `sh` by default.

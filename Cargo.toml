@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/hybrd-oss/hooky"
-description = "Command safety wrapper and policy evaluator for Codex"
+description = "Configurable command firewall for shells, agents, and automation"
 
 [[bin]]
 name = "hooky"

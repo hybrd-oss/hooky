@@ -128,3 +128,38 @@ fn check_shell_audit_redacts_secrets() {
     assert!(!audit.contains("abc123"));
     assert!(!audit.contains("pass@example.com"));
 }
+
+#[test]
+fn run_requires_target_program() {
+    Command::new(env!("CARGO_BIN_EXE_hooky"))
+        .arg("run")
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains(
+            "required arguments were not provided",
+        ));
+}
+
+#[test]
+fn run_executes_generic_target_program() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let config_path = temp.path().join("hooky.yml");
+    let audit_path = temp.path().join("audit.jsonl");
+    let shims_dir = temp.path().join("shims");
+    write_native_config(&config_path, &audit_path);
+
+    Command::new(env!("CARGO_BIN_EXE_hooky"))
+        .args([
+            "run",
+            "--config",
+            config_path.to_str().expect("path should be valid utf-8"),
+            "--shims-dir",
+            shims_dir.to_str().expect("path should be valid utf-8"),
+            "--",
+            "echo",
+            "hooky-run-smoke",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hooky-run-smoke"));
+}
