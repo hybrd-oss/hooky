@@ -31,11 +31,11 @@ audit:
 #[test]
 fn check_shell_blocks_without_running_git() {
     let temp = tempfile::tempdir().expect("tempdir should be created");
-    let config_path = temp.path().join("safe-codex.yml");
+    let config_path = temp.path().join("hooky.yml");
     let audit_path = temp.path().join("audit.jsonl");
     write_native_config(&config_path, &audit_path);
 
-    Command::new(env!("CARGO_BIN_EXE_safe-codex"))
+    Command::new(env!("CARGO_BIN_EXE_hooky"))
         .args([
             "check-shell",
             "--config",
@@ -55,11 +55,11 @@ fn check_shell_blocks_without_running_git() {
 #[test]
 fn check_argv_denies_force_push_in_deny_only_mode() {
     let temp = tempfile::tempdir().expect("tempdir should be created");
-    let config_path = temp.path().join("safe-codex.yml");
+    let config_path = temp.path().join("hooky.yml");
     let audit_path = temp.path().join("audit.jsonl");
     write_native_config(&config_path, &audit_path);
 
-    Command::new(env!("CARGO_BIN_EXE_safe-codex"))
+    Command::new(env!("CARGO_BIN_EXE_hooky"))
         .args([
             "check-argv",
             "--config",
@@ -83,7 +83,7 @@ fn install_shims_creates_expected_files() {
     let temp = tempfile::tempdir().expect("tempdir should be created");
     let shims_dir = temp.path().join("shims");
 
-    Command::new(env!("CARGO_BIN_EXE_safe-codex"))
+    Command::new(env!("CARGO_BIN_EXE_hooky"))
         .args([
             "install-shims",
             "--dir",
@@ -93,7 +93,7 @@ fn install_shims_creates_expected_files() {
         .success()
         .stdout(predicate::str::contains("\"files_installed\""));
 
-    let expected = ["safe-shell", "git", "rm", "mv", "curl", "bash", "sh"];
+    let expected = ["hooky-shell", "git", "rm", "mv", "curl", "bash", "sh"];
     for file in expected {
         assert!(
             shims_dir.join(file).exists(),
@@ -105,11 +105,11 @@ fn install_shims_creates_expected_files() {
 #[test]
 fn check_shell_audit_redacts_secrets() {
     let temp = tempfile::tempdir().expect("tempdir should be created");
-    let config_path = temp.path().join("safe-codex.yml");
+    let config_path = temp.path().join("hooky.yml");
     let audit_path = temp.path().join("audit.jsonl");
     write_native_config(&config_path, &audit_path);
 
-    Command::new(env!("CARGO_BIN_EXE_safe-codex"))
+    Command::new(env!("CARGO_BIN_EXE_hooky"))
         .args([
             "check-shell",
             "--config",

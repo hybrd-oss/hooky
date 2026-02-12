@@ -28,12 +28,12 @@ Include:
 
 ## Security Model and Scope
 
-`safe-codex` is command-entrypoint interception via generated shell/PATH shims.
+`hooky` is command-entrypoint interception via generated shell/PATH shims.
 
 In scope:
 
 - Commands executed through shimmed binaries (`git`, `rm`, `mv`, `curl`, `bash`, `sh`)
-- Shell command strings checked by `safe-shell` for `bash -c`, `bash -lc`, and `bash -l -c`
+- Shell command strings checked by `hooky-shell` for `bash -c`, `bash -lc`, and `bash -l -c`
 - Policy engine decisions and deny-first behavior
 
 Out of scope / known limits:
@@ -49,4 +49,4 @@ Out of scope / known limits:
 - Run `cargo audit`
 - Run `cargo deny check advisories`
 - Run `pre-commit run --all-files`
-- Review `.safe-codex-log.jsonl` handling and ensure sensitive data redaction remains enabled
+- Review `.hooky-log.jsonl` handling and ensure sensitive data redaction remains enabled

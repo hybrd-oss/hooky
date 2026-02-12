@@ -110,7 +110,7 @@ impl Default for AuditConfig {
 
 impl Config {
     pub fn load(path: Option<&Path>) -> Result<Self> {
-        let effective_path = path.unwrap_or_else(|| Path::new(".safe-codex.yml"));
+        let effective_path = path.unwrap_or_else(|| Path::new(".hooky.yml"));
 
         if !effective_path.exists() {
             return Ok(Self::default());
@@ -118,14 +118,14 @@ impl Config {
 
         let raw = fs::read_to_string(effective_path).with_context(|| {
             format!(
-                "failed to read safe-codex config at {}",
+                "failed to read hooky config at {}",
                 effective_path.display()
             )
         })?;
 
         let parsed: Self = serde_yaml::from_str(&raw).with_context(|| {
             format!(
-                "failed to parse safe-codex config at {}",
+                "failed to parse hooky config at {}",
                 effective_path.display()
             )
         })?;
@@ -180,7 +180,7 @@ fn default_claude_hooks_dir() -> PathBuf {
 }
 
 fn default_audit_path() -> PathBuf {
-    PathBuf::from(".safe-codex-log.jsonl")
+    PathBuf::from(".hooky-log.jsonl")
 }
 
 fn default_engines() -> Vec<EngineConfig> {

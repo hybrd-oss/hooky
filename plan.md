@@ -1,8 +1,8 @@
-# Safe Codex Implementation Plan (Rust)
+# Hooky Implementation Plan (Rust)
 
 ## Overview
 
-Build a standalone `safe-codex` command that enforces command safety for Codex sessions via command interception, policy engines, and audit logging.
+Build a standalone `hooky` command that enforces command safety for Codex sessions via command interception, policy engines, and audit logging.
 
 Primary goals:
 1. Intercept commands before execution
@@ -22,7 +22,7 @@ Primary goals:
 A user can run:
 
 ```bash
-safe-codex [codex args...]
+hooky [codex args...]
 ```
 
 And get:
@@ -42,8 +42,8 @@ And get:
 ## High-Level Architecture
 
 ```text
-safe-codex (launcher)
-  -> safe-shell (intercepts shell command strings)
+hooky (launcher)
+  -> hooky-shell (intercepts shell command strings)
   -> PATH shims (intercept direct binary calls)
   -> safe-policy daemon/cli (Rust)
        -> engine pipeline
@@ -63,7 +63,7 @@ Use a workspace layout while keeping existing `tv` code intact:
 Cargo.toml (workspace root)
 crates/
   tv/                  # existing code moved or referenced
-  safe-codex/          # launcher + shim management
+  hooky/          # launcher + shim management
   safe-policy/         # policy models, parser, evaluator, combiner
   safe-engines/        # engine trait + dcg/claude/hooks/native impls
   safe-audit/          # structured logging and replay helpers
@@ -100,7 +100,7 @@ Combiner policy defaults:
 3. If no block and at least one `Confirm`, return `Confirm`
 4. Otherwise `Allow`
 
-## Config Schema (`.safe-codex.yml`)
+## Config Schema (`.hooky.yml`)
 
 ```yaml
 version: 1
@@ -121,8 +121,8 @@ engines:
 
   - type: local_hooks
     enabled: true
-    pre_command: .safe-codex/hooks/pre-command.sh
-    post_command: .safe-codex/hooks/post-command.sh
+    pre_command: .hooky/hooks/pre-command.sh
+    post_command: .hooky/hooks/post-command.sh
 
   - type: native
     enabled: true
@@ -140,7 +140,7 @@ combine:
   rewrite_mode: first
 
 bypass:
-  env_var: SAFE_CODEX_BYPASS
+  env_var: HOOKY_BYPASS
   allow: false
 ```
 
@@ -148,7 +148,7 @@ bypass:
 
 ### Layer 1: Shell command interception
 
-`safe-shell` intercepts `-lc "..."` commands before forwarding to the real shell.
+`hooky-shell` intercepts `-lc "..."` commands before forwarding to the real shell.
 
 Catches:
 - shell builtins
@@ -192,12 +192,12 @@ Failure policy:
 Standalone commands:
 
 ```bash
-safe-codex run [--] <codex args...>
-safe-codex check-shell --cmd "git push --force"
-safe-codex check-argv --bin git -- push --force
-safe-codex install-shims
-safe-codex doctor
-safe-codex replay-log <file>
+hooky run [--] <codex args...>
+hooky check-shell --cmd "git push --force"
+hooky check-argv --bin git -- push --force
+hooky install-shims
+hooky doctor
+hooky replay-log <file>
 ```
 
 All machine-readable outputs should use the repo's JSON response conventions where practical.
@@ -206,19 +206,19 @@ All machine-readable outputs should use the repo's JSON response conventions whe
 
 ## Phase 0: Scaffolding
 
-- [ ] Add standalone `safe-codex` binary target
-- [ ] Add config loader for `.safe-codex.yml`
+- [ ] Add standalone `hooky` binary target
+- [ ] Add config loader for `.hooky.yml`
 - [ ] Add baseline decision enums + serde models
 - [ ] Add JSONL audit writer
 
 Success criteria:
-- `safe-codex doctor` validates config and filesystem prerequisites
+- `hooky doctor` validates config and filesystem prerequisites
 
 ## Phase 1: Native engine + interception MVP
 
 - [ ] Implement `native` rule matcher (block/rewrite/confirm/allow)
 - [ ] Implement `check-shell` and `check-argv`
-- [ ] Implement `safe-shell` wrapper script template
+- [ ] Implement `hooky-shell` wrapper script template
 - [ ] Implement shim generation/install (`install-shims`)
 
 Success criteria:
@@ -250,7 +250,7 @@ Success criteria:
 - [ ] Add external process adapter for DCG
 - [ ] Map DCG output to normalized `Decision`
 - [ ] Add `dcg_only` and `hybrid` execution modes
-- [ ] Add `safe-codex doctor` checks for DCG availability
+- [ ] Add `hooky doctor` checks for DCG availability
 
 Success criteria:
 - Same command decision path works with native-only, dcg-only, and hybrid modes
@@ -295,7 +295,7 @@ Compatibility tests:
 - Mitigation: per-engine timeouts and optional short-circuit on hard block
 
 4. Config complexity
-- Mitigation: ship opinionated defaults and `safe-codex init`
+- Mitigation: ship opinionated defaults and `hooky init`
 
 ## Rollout Plan
 
@@ -306,8 +306,8 @@ Compatibility tests:
 
 ## Deliverables
 
-- `safe-codex` standalone binary
-- `.safe-codex.yml` schema + example config
+- `hooky` standalone binary
+- `.hooky.yml` schema + example config
 - shim installer and shell wrapper
 - claude hook compatibility adapter
 - optional DCG adapter

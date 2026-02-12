@@ -1,11 +1,11 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand};
+use hooky::hooky::audit::{append_event, AuditEvent};
+use hooky::hooky::config::Config;
+use hooky::hooky::decision::{Decision, DecisionKind};
+use hooky::hooky::{doctor, evaluator};
+use hooky::types::response::CliResponse;
 use regex::Regex;
-use safe_codex::safe_codex::audit::{append_event, AuditEvent};
-use safe_codex::safe_codex::config::Config;
-use safe_codex::safe_codex::decision::{Decision, DecisionKind};
-use safe_codex::safe_codex::{doctor, evaluator};
-use safe_codex::types::response::CliResponse;
 use std::env;
 use std::ffi::OsStr;
 use std::fs;
@@ -13,12 +13,12 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-const DEFAULT_CONFIG_PATH: &str = ".safe-codex.yml";
-const DEFAULT_SHIMS_DIR: &str = ".safe-codex/shims";
+const DEFAULT_CONFIG_PATH: &str = ".hooky.yml";
+const DEFAULT_SHIMS_DIR: &str = ".hooky/shims";
 const SHIM_COMMANDS: [&str; 6] = ["git", "rm", "mv", "curl", "bash", "sh"];
 
 #[derive(Parser)]
-#[command(name = "safe-codex")]
+#[command(name = "hooky")]
 #[command(about = "Command safety wrapper and policy evaluator for Codex")]
 #[command(version)]
 struct Cli {
@@ -30,7 +30,7 @@ struct Cli {
 enum Commands {
     /// Run codex with a guarded shell and command shims
     Run {
-        /// Path to .safe-codex.yml
+        /// Path to .hooky.yml
         #[arg(long)]
         config: Option<PathBuf>,
 
@@ -54,9 +54,9 @@ enum Commands {
         force: bool,
     },
 
-    /// Validate safe-codex configuration and engine prerequisites
+    /// Validate hooky configuration and engine prerequisites
     Doctor {
-        /// Path to .safe-codex.yml
+        /// Path to .hooky.yml
         #[arg(long)]
         config: Option<PathBuf>,
     },
@@ -67,7 +67,7 @@ enum Commands {
         #[arg(long)]
         cmd: String,
 
-        /// Path to .safe-codex.yml
+        /// Path to .hooky.yml
         #[arg(long)]
         config: Option<PathBuf>,
 
@@ -82,7 +82,7 @@ enum Commands {
         #[arg(long)]
         bin: String,
 
-        /// Path to .safe-codex.yml
+        /// Path to .hooky.yml
         #[arg(long)]
         config: Option<PathBuf>,
 
@@ -150,7 +150,7 @@ fn run_codex(
     let config = Config::load(Some(&resolved_config))?;
     let doctor_report = doctor::run(&config)?;
     if !doctor_report.ok {
-        bail!("doctor checks failed; run `safe-codex doctor` for details");
+        bail!("doctor checks failed; run `hooky doctor` for details");
     }
 
     let current_exe = std::env::current_exe().context("failed to resolve current executable")?;
@@ -165,13 +165,13 @@ fn run_codex(
         format!("{}:{existing_path}", shims_path.display())
     };
 
-    let safe_shell = shims_path.join("safe-shell");
+    let safe_shell = shims_path.join("hooky-shell");
     let mut cmd = Command::new("codex");
     cmd.args(codex_args)
         .env("PATH", combined_path)
         .env("SHELL", &safe_shell)
-        .env("SAFE_CODEX_BIN", &current_exe)
-        .env("SAFE_CODEX_CONFIG", &resolved_config)
+        .env("HOOKY_BIN", &current_exe)
+        .env("HOOKY_CONFIG", &resolved_config)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
@@ -199,19 +199,19 @@ fn install_shims_command(dir: Option<&Path>, force: bool) -> Result<()> {
     Ok(())
 }
 
-fn install_shims(dir: &Path, force: bool, safe_codex_bin: &Path) -> Result<usize> {
+fn install_shims(dir: &Path, force: bool, hooky_bin: &Path) -> Result<usize> {
     fs::create_dir_all(dir)
         .with_context(|| format!("failed to create shims directory {}", dir.display()))?;
 
-    let safe_shell_path = dir.join("safe-shell");
-    let safe_shell_script = build_safe_shell_script(safe_codex_bin)?;
+    let safe_shell_path = dir.join("hooky-shell");
+    let safe_shell_script = build_safe_shell_script(hooky_bin)?;
     write_executable_script(&safe_shell_path, &safe_shell_script, force)?;
 
     let mut installed = 1usize;
     for command_name in SHIM_COMMANDS {
         let real_path = resolve_binary_path(command_name, dir)
             .with_context(|| format!("failed to resolve binary path for {command_name}"))?;
-        let shim_script = build_command_shim_script(command_name, &real_path, safe_codex_bin)?;
+        let shim_script = build_command_shim_script(command_name, &real_path, hooky_bin)?;
         let shim_path = dir.join(command_name);
         write_executable_script(&shim_path, &shim_script, force)?;
         installed += 1;
@@ -220,24 +220,24 @@ fn install_shims(dir: &Path, force: bool, safe_codex_bin: &Path) -> Result<usize
     Ok(installed)
 }
 
-fn build_safe_shell_script(safe_codex_bin: &Path) -> Result<String> {
-    let bin = safe_codex_bin
+fn build_safe_shell_script(hooky_bin: &Path) -> Result<String> {
+    let bin = hooky_bin
         .to_str()
-        .ok_or_else(|| anyhow!("safe-codex binary path is not valid UTF-8"))?;
+        .ok_or_else(|| anyhow!("hooky binary path is not valid UTF-8"))?;
 
     Ok(format!(
         "#!/usr/bin/env bash
 set -euo pipefail
 
-SAFE_CODEX_BIN=\"${{SAFE_CODEX_BIN:-{bin}}}\"
-SAFE_CODEX_CONFIG=\"${{SAFE_CODEX_CONFIG:-{DEFAULT_CONFIG_PATH}}}\"
+HOOKY_BIN=\"${{HOOKY_BIN:-{bin}}}\"
+HOOKY_CONFIG=\"${{HOOKY_CONFIG:-{DEFAULT_CONFIG_PATH}}}\"
 
 if [[ \"${{1:-}}\" == \"-c\" && -n \"${{2:-}}\" ]]; then
-  \"$SAFE_CODEX_BIN\" check-shell --quiet --config \"$SAFE_CODEX_CONFIG\" --cmd \"$2\"
+  \"$HOOKY_BIN\" check-shell --quiet --config \"$HOOKY_CONFIG\" --cmd \"$2\"
 elif [[ \"${{1:-}}\" == \"-lc\" && -n \"${{2:-}}\" ]]; then
-  \"$SAFE_CODEX_BIN\" check-shell --quiet --config \"$SAFE_CODEX_CONFIG\" --cmd \"$2\"
+  \"$HOOKY_BIN\" check-shell --quiet --config \"$HOOKY_CONFIG\" --cmd \"$2\"
 elif [[ \"${{1:-}}\" == \"-l\" && \"${{2:-}}\" == \"-c\" && -n \"${{3:-}}\" ]]; then
-  \"$SAFE_CODEX_BIN\" check-shell --quiet --config \"$SAFE_CODEX_CONFIG\" --cmd \"$3\"
+  \"$HOOKY_BIN\" check-shell --quiet --config \"$HOOKY_CONFIG\" --cmd \"$3\"
 fi
 
 exec /bin/bash \"$@\"
@@ -248,23 +248,23 @@ exec /bin/bash \"$@\"
 fn build_command_shim_script(
     command_name: &str,
     real_path: &Path,
-    safe_codex_bin: &Path,
+    hooky_bin: &Path,
 ) -> Result<String> {
     let real = real_path
         .to_str()
         .ok_or_else(|| anyhow!("real binary path for {command_name} is not valid UTF-8"))?;
-    let bin = safe_codex_bin
+    let bin = hooky_bin
         .to_str()
-        .ok_or_else(|| anyhow!("safe-codex binary path is not valid UTF-8"))?;
+        .ok_or_else(|| anyhow!("hooky binary path is not valid UTF-8"))?;
 
     Ok(format!(
         "#!/usr/bin/env bash
 set -euo pipefail
 
-SAFE_CODEX_BIN=\"${{SAFE_CODEX_BIN:-{bin}}}\"
-SAFE_CODEX_CONFIG=\"${{SAFE_CODEX_CONFIG:-{DEFAULT_CONFIG_PATH}}}\"
+HOOKY_BIN=\"${{HOOKY_BIN:-{bin}}}\"
+HOOKY_CONFIG=\"${{HOOKY_CONFIG:-{DEFAULT_CONFIG_PATH}}}\"
 
-\"$SAFE_CODEX_BIN\" check-argv --quiet --config \"$SAFE_CODEX_CONFIG\" --bin \"{command_name}\" -- \"$@\"
+\"$HOOKY_BIN\" check-argv --quiet --config \"$HOOKY_CONFIG\" --bin \"{command_name}\" -- \"$@\"
 exec \"{real}\" \"$@\"
 "
     ))
@@ -489,7 +489,7 @@ fn redact_command_for_audit(command: &str) -> String {
 fn fail_closed_decision(error: &str) -> Decision {
     Decision::block(
         format!("fail-closed: {error}"),
-        "safe-codex",
+        "hooky",
         Some("engine-error".to_string()),
     )
 }
@@ -563,8 +563,7 @@ mod tests {
 
     #[test]
     fn safe_shell_script_checks_dash_c_and_dash_lc() {
-        let script =
-            build_safe_shell_script(Path::new("/tmp/safe-codex")).expect("script generation");
+        let script = build_safe_shell_script(Path::new("/tmp/hooky")).expect("script generation");
 
         assert!(script.contains("\"${1:-}\" == \"-c\""));
         assert!(script.contains("\"${1:-}\" == \"-lc\""));

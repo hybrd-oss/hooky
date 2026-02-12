@@ -1,5 +1,5 @@
-use crate::safe_codex::config::{Config, EngineConfig};
-use crate::safe_codex::evaluator::command_exists;
+use crate::hooky::config::{Config, EngineConfig};
+use crate::hooky::evaluator::command_exists;
 use anyhow::Result;
 use serde::Serialize;
 
@@ -113,7 +113,7 @@ pub fn run(config: &Config) -> Result<DoctorReport> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::safe_codex::config::{AuditConfig, CombineConfig, Mode};
+    use crate::hooky::config::{AuditConfig, CombineConfig, Mode};
     use std::path::PathBuf;
 
     #[test]
@@ -127,7 +127,7 @@ mod tests {
             }],
             combine: CombineConfig::default(),
             audit: AuditConfig {
-                log_path: PathBuf::from(".safe-codex-log.jsonl"),
+                log_path: PathBuf::from(".hooky-log.jsonl"),
             },
         };
 

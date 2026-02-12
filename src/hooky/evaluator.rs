@@ -1,5 +1,5 @@
-use crate::safe_codex::config::{Config, EngineConfig, NativeAction};
-use crate::safe_codex::decision::{Decision, DecisionKind};
+use crate::hooky::config::{Config, EngineConfig, NativeAction};
+use crate::hooky::decision::{Decision, DecisionKind};
 use anyhow::{anyhow, bail, Context, Result};
 use regex::Regex;
 use serde_json::json;
@@ -288,7 +288,7 @@ fn combined_text(stdout: &[u8], stderr: &[u8]) -> Option<String> {
 
 fn run_native_engine(
     command: &str,
-    rules: &[crate::safe_codex::config::NativeRule],
+    rules: &[crate::hooky::config::NativeRule],
 ) -> Result<Option<Decision>> {
     for rule in rules {
         let regex = Regex::new(&rule.pattern)
@@ -347,20 +347,20 @@ pub fn command_exists(command: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::safe_codex::config::{AuditConfig, CombineConfig, NativeRule};
+    use crate::hooky::config::{AuditConfig, CombineConfig, NativeRule};
     use std::path::PathBuf;
 
     fn config_with_native_rules(rules: Vec<NativeRule>) -> Config {
         Config {
             version: 1,
-            mode: crate::safe_codex::config::Mode::Enforce,
+            mode: crate::hooky::config::Mode::Enforce,
             engines: vec![EngineConfig::Native {
                 enabled: true,
                 rules,
             }],
             combine: CombineConfig::default(),
             audit: AuditConfig {
-                log_path: PathBuf::from(".safe-codex-log.jsonl"),
+                log_path: PathBuf::from(".hooky-log.jsonl"),
             },
         }
     }
@@ -402,7 +402,7 @@ mod tests {
     fn rewrite_then_block_still_returns_block() {
         let config = Config {
             version: 1,
-            mode: crate::safe_codex::config::Mode::Enforce,
+            mode: crate::hooky::config::Mode::Enforce,
             engines: vec![
                 EngineConfig::Native {
                     enabled: true,
@@ -425,7 +425,7 @@ mod tests {
             ],
             combine: CombineConfig::default(),
             audit: AuditConfig {
-                log_path: PathBuf::from(".safe-codex-log.jsonl"),
+                log_path: PathBuf::from(".hooky-log.jsonl"),
             },
         };
 

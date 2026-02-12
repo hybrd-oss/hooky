@@ -286,6 +286,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
+name = "hooky"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "assert_cmd",
+ "chrono",
+ "clap",
+ "predicates",
+ "regex",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+]
+
+[[package]]
 name = "iana-time-zone"
 version = "0.1.65"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -523,22 +539,6 @@ name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
-
-[[package]]
-name = "safe-codex"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "assert_cmd",
- "chrono",
- "clap",
- "predicates",
- "regex",
- "serde",
- "serde_json",
- "serde_yaml",
- "tempfile",
-]
 
 [[package]]
 name = "semver"
