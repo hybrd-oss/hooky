@@ -49,7 +49,7 @@ pub fn run(config: &Config) -> Result<DoctorReport> {
                         }
                     ),
                 });
-            },
+            }
             EngineConfig::Dcg { enabled, cmd, .. } => {
                 let ok = !enabled || command_exists(cmd);
                 checks.push(DoctorCheck {
@@ -66,7 +66,7 @@ pub fn run(config: &Config) -> Result<DoctorReport> {
                         }
                     ),
                 });
-            },
+            }
             EngineConfig::Native { enabled, rules } => {
                 let ok = !enabled || !rules.is_empty();
                 checks.push(DoctorCheck {
@@ -74,7 +74,7 @@ pub fn run(config: &Config) -> Result<DoctorReport> {
                     ok,
                     details: format!("enabled={}, rules={}", enabled, rules.len()),
                 });
-            },
+            }
             EngineConfig::LocalHooks {
                 enabled,
                 pre_command,
@@ -100,7 +100,7 @@ pub fn run(config: &Config) -> Result<DoctorReport> {
                         "enabled={enabled}, pre={pre_command:?}, post={post_command:?}"
                     ),
                 });
-            },
+            }
         }
     }
 

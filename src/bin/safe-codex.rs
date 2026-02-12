@@ -1,14 +1,14 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand};
-use std::fs;
-use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use safe_codex::safe_codex::audit::{append_event, AuditEvent};
 use safe_codex::safe_codex::config::Config;
 use safe_codex::safe_codex::decision::{Decision, DecisionKind};
 use safe_codex::safe_codex::{doctor, evaluator};
 use safe_codex::types::response::CliResponse;
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 const DEFAULT_CONFIG_PATH: &str = ".safe-codex.yml";
 const DEFAULT_SHIMS_DIR: &str = ".safe-codex/shims";
@@ -99,13 +99,13 @@ fn main() {
         match serde_json::to_string_pretty(&response) {
             Ok(json) => {
                 println!("{json}");
-            },
+            }
             Err(_) => {
                 println!(
                     "{{\"success\":false,\"error\":\"{}\"}}",
                     err.to_string().replace('"', "\\\"")
                 );
-            },
+            }
         }
         std::process::exit(1);
     }
@@ -124,7 +124,7 @@ fn run() -> Result<()> {
         Commands::Doctor { config } => run_doctor(config.as_deref()),
         Commands::CheckShell { cmd, config, quiet } => {
             run_check_shell(config.as_deref(), &cmd, quiet)
-        },
+        }
         Commands::CheckArgv {
             bin,
             args,
@@ -406,7 +406,7 @@ fn fail_closed_decision(error: &str) -> Decision {
 
 fn set_exit_code_from_decision(decision: &Decision) {
     match decision.kind {
-        DecisionKind::Allow | DecisionKind::Rewrite => {},
+        DecisionKind::Allow | DecisionKind::Rewrite => {}
         DecisionKind::Confirm => std::process::exit(10),
         DecisionKind::Block => std::process::exit(1),
     }

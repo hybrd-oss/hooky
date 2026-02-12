@@ -35,11 +35,11 @@ fn evaluate_command(command: &str, config: &Config) -> Result<Decision> {
                     "combiner",
                     decision.rule_id.clone(),
                 ));
-            },
+            }
             DecisionKind::Confirm => {
                 pending_confirm = true;
-            },
-            DecisionKind::Allow => {},
+            }
+            DecisionKind::Allow => {}
         }
     }
 
@@ -63,25 +63,25 @@ fn run_engine(engine: &EngineConfig, command: &str) -> Result<Option<Decision>> 
                 return Ok(None);
             }
             run_claude_hook_engine(command, hooks_dir)
-        },
+        }
         EngineConfig::Dcg { enabled, cmd, args } => {
             if !enabled {
                 return Ok(None);
             }
             run_dcg_engine(command, cmd, args)
-        },
+        }
         EngineConfig::Native { enabled, rules } => {
             if !enabled {
                 return Ok(None);
             }
             Ok(run_native_engine(command, rules.as_slice())?)
-        },
+        }
         EngineConfig::LocalHooks { enabled, .. } => {
             if !enabled {
                 return Ok(None);
             }
             bail!("local_hooks engine configured but not implemented yet");
-        },
+        }
     }
 }
 
@@ -268,7 +268,7 @@ fn parse_dcg_json(command: &str, value: &serde_json::Value) -> Option<Decision> 
                 .unwrap_or(command);
 
             Some(Decision::rewrite(reason, "dcg", rule_id, rewritten_command))
-        },
+        }
         _ => None,
     }
 }
@@ -305,7 +305,7 @@ fn run_native_engine(
                     "native",
                     Some(rule.id.clone()),
                 )));
-            },
+            }
             NativeAction::Rewrite => {
                 if let Some(rewrite) = &rule.rewrite {
                     return Ok(Some(Decision::rewrite(
@@ -319,7 +319,7 @@ fn run_native_engine(
                     "native rewrite rule {} matched but no rewrite target was configured",
                     rule.id
                 ));
-            },
+            }
             NativeAction::Confirm => {
                 return Ok(Some(Decision {
                     kind: DecisionKind::Confirm,
@@ -328,7 +328,7 @@ fn run_native_engine(
                     rewritten_command: None,
                     engine: "native".to_string(),
                 }));
-            },
+            }
         }
     }
 

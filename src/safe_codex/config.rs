@@ -264,7 +264,7 @@ mod tests {
         match &config.engines[0] {
             EngineConfig::Native { rules, .. } => {
                 assert!(!rules.is_empty());
-            },
+            }
             _ => panic!("expected native engine"),
         }
     }
