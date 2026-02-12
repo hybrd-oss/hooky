@@ -1,0 +1,34 @@
+[package]
+name = "safe-codex"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/hybrd-oss/safe-codex"
+description = "Command safety wrapper and policy evaluator for Codex"
+
+[[bin]]
+name = "safe-codex"
+path = "src/bin/safe-codex.rs"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+must_use_candidate = "allow"
+module_name_repetitions = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+doc_markdown = "allow"
+
+[dependencies]
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.4", features = ["derive"] }
+regex = "1.11"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+
+[dev-dependencies]
+assert_cmd = "2.0"
+predicates = "3.0"
+tempfile = "3.10"
