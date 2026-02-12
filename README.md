@@ -16,6 +16,7 @@
 - Rewrite actions are currently denied by combiner behavior (deny-only mode)
 - Claude hook compatibility via `.claude/hooks/block-no-verify.sh`
 - JSONL audit logging to `.hooky-log.jsonl` with best-effort secret redaction
+- Default shim coverage is `git`, `rm`, `mv`, `curl`, `bash`, and `sh`; this can be extended to any command by adding more shim targets
 
 ## Quickstart
 
@@ -33,7 +34,8 @@ hooky run -- --help
 1. `hooky run` starts Codex with a guarded environment:
    - Prepends `.hooky/shims` to `PATH`
    - Sets `SHELL` to the generated `hooky-shell` shim
-2. `hooky install-shims` creates wrapper scripts for `git`, `rm`, `mv`, `curl`, `bash`, and `sh`.
+2. `hooky install-shims` creates wrapper scripts for `git`, `rm`, `mv`, `curl`, `bash`, and `sh` by default.
+   - This mechanism is generic: you can add additional shim targets to cover other commands.
 3. Each command shim runs `hooky check-argv ...` before executing the real binary.
    - If decision is `allow`, it `exec`s the real command
    - If decision is `block` (or `confirm`), execution stops with a non-zero exit
@@ -44,7 +46,7 @@ hooky run -- --help
    - `rewrite` is currently treated as `block` (deny-only mode)
 6. Every command check is appended to `.hooky-log.jsonl`.
 
-This is command-level interception via shell and PATH shims (not kernel/syscall sandboxing). In practice, `git ...` and `rm -rf ...` are intercepted because `git` and `rm` are shimmed command entrypoints.
+This is command-level interception via shell and PATH shims (not kernel/syscall sandboxing). In practice, commands are intercepted when they enter through shimmed command entrypoints. The current default set is `git`, `rm`, `mv`, `curl`, `bash`, and `sh`, but the approach can be extended to other commands.
 
 ## Configuration
 
