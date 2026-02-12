@@ -35,7 +35,6 @@ Example: blocked by a native rule (`--no-verify`).
 
 ```json
 {
-  "success": true,
   "data": {
     "command": "git commit --no-verify -m test",
     "decision": {
@@ -53,7 +52,6 @@ Example: rewrite rule rejected in deny-only mode (`--force`).
 
 ```json
 {
-  "success": true,
   "data": {
     "command": "git push origin main --force",
     "decision": {

@@ -104,10 +104,7 @@ fn main() {
                 println!("{json}");
             }
             Err(_) => {
-                println!(
-                    "{{\"success\":false,\"error\":\"{}\"}}",
-                    err.to_string().replace('"', "\\\"")
-                );
+                println!("{{\"error\":\"{}\"}}", err.to_string().replace('"', "\\\""));
             }
         }
         std::process::exit(1);
