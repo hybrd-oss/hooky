@@ -29,6 +29,44 @@ hooky install-shims
 hooky run -- --help
 ```
 
+## Sample rejected command output
+
+Example: blocked by a native rule (`--no-verify`).
+
+```json
+{
+  "success": true,
+  "data": {
+    "command": "git commit --no-verify -m test",
+    "decision": {
+      "kind": "block",
+      "reason": "blocked by native rule block-no-verify",
+      "rule_id": "block-no-verify",
+      "engine": "native"
+    }
+  },
+  "timestamp": "2026-02-12T19:40:02.314475Z"
+}
+```
+
+Example: rewrite rule rejected in deny-only mode (`--force`).
+
+```json
+{
+  "success": true,
+  "data": {
+    "command": "git push origin main --force",
+    "decision": {
+      "kind": "block",
+      "reason": "rewrite decisions are disabled; deny-only mode",
+      "rule_id": "force-to-lease",
+      "engine": "combiner"
+    }
+  },
+  "timestamp": "2026-02-12T19:40:02.333342Z"
+}
+```
+
 ## How interception works
 
 1. `hooky run` starts Codex with a guarded environment:
