@@ -79,6 +79,33 @@ fn check_argv_denies_force_push_in_deny_only_mode() {
 }
 
 #[test]
+fn check_argv_quiet_still_prints_failure_details() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let config_path = temp.path().join("hooky.yml");
+    let audit_path = temp.path().join("audit.jsonl");
+    write_native_config(&config_path, &audit_path);
+
+    Command::new(env!("CARGO_BIN_EXE_hooky"))
+        .args([
+            "check-argv",
+            "--quiet",
+            "--config",
+            config_path.to_str().expect("path should be valid utf-8"),
+            "--bin",
+            "git",
+            "--",
+            "commit",
+            "--no-verify",
+            "-m",
+            "test",
+        ])
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("hooky Block:"))
+        .stderr(predicate::str::contains("rule: block-no-verify"));
+}
+
+#[test]
 fn install_shims_creates_expected_files() {
     let temp = tempfile::tempdir().expect("tempdir should be created");
     let shims_dir = temp.path().join("shims");
@@ -162,4 +189,37 @@ fn run_executes_generic_target_program() {
         .assert()
         .success()
         .stdout(predicate::str::contains("hooky-run-smoke"));
+}
+
+#[test]
+fn run_is_idempotent_after_install_shims() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let config_path = temp.path().join("hooky.yml");
+    let audit_path = temp.path().join("audit.jsonl");
+    let shims_dir = temp.path().join("shims");
+    write_native_config(&config_path, &audit_path);
+
+    Command::new(env!("CARGO_BIN_EXE_hooky"))
+        .args([
+            "install-shims",
+            "--dir",
+            shims_dir.to_str().expect("path should be valid utf-8"),
+        ])
+        .assert()
+        .success();
+
+    Command::new(env!("CARGO_BIN_EXE_hooky"))
+        .args([
+            "run",
+            "--config",
+            config_path.to_str().expect("path should be valid utf-8"),
+            "--shims-dir",
+            shims_dir.to_str().expect("path should be valid utf-8"),
+            "--",
+            "echo",
+            "hooky-idempotent",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hooky-idempotent"));
 }

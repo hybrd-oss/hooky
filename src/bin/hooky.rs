@@ -8,6 +8,7 @@ use hooky::types::response::CliResponse;
 use regex::Regex;
 use std::env;
 use std::ffi::OsStr;
+use std::fmt::Write as _;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -157,7 +158,9 @@ fn run_program(
     let current_exe = std::env::current_exe().context("failed to resolve current executable")?;
     let shims_path = shims_dir.map_or_else(|| PathBuf::from(DEFAULT_SHIMS_DIR), Path::to_path_buf);
 
-    install_shims(&shims_path, false, &current_exe)?;
+    // `run` should be idempotent: refresh generated shims instead of failing
+    // when they already exist from a prior `install-shims` or `run`.
+    install_shims(&shims_path, true, &current_exe)?;
 
     let existing_path = std::env::var("PATH").unwrap_or_default();
     let combined_path = if existing_path.is_empty() {
@@ -237,7 +240,7 @@ fn build_safe_shell_script(hooky_bin: &Path) -> Result<String> {
         .ok_or_else(|| anyhow!("hooky binary path is not valid UTF-8"))?;
 
     Ok(format!(
-        "#!/usr/bin/env bash
+        "#!/bin/bash
 set -euo pipefail
 
 HOOKY_BIN=\"${{HOOKY_BIN:-{bin}}}\"
@@ -269,7 +272,7 @@ fn build_command_shim_script(
         .ok_or_else(|| anyhow!("hooky binary path is not valid UTF-8"))?;
 
     Ok(format!(
-        "#!/usr/bin/env bash
+        "#!/bin/bash
 set -euo pipefail
 
 HOOKY_BIN=\"${{HOOKY_BIN:-{bin}}}\"
@@ -407,7 +410,9 @@ fn run_check_shell(config_path: Option<&Path>, command: &str, quiet: bool) -> Re
 
     write_audit(&config, command, &decision)?;
 
-    if !quiet {
+    if quiet {
+        emit_quiet_failure_details(&decision);
+    } else {
         let response = CliResponse::success(CheckResponse {
             command: command.to_string(),
             decision: decision.clone(),
@@ -440,7 +445,9 @@ fn run_check_argv(
 
     write_audit(&config, &command, &decision)?;
 
-    if !quiet {
+    if quiet {
+        emit_quiet_failure_details(&decision);
+    } else {
         let response = CliResponse::success(CheckResponse {
             command,
             decision: decision.clone(),
@@ -452,6 +459,20 @@ fn run_check_argv(
 
     set_exit_code_from_decision(&decision);
     Ok(())
+}
+
+fn emit_quiet_failure_details(decision: &Decision) {
+    if matches!(decision.kind, DecisionKind::Allow) {
+        return;
+    }
+
+    let mut details = format!("hooky {:?}: {}", decision.kind, decision.reason);
+    if let Some(rule_id) = &decision.rule_id {
+        let _ = write!(&mut details, " [rule: {rule_id}]");
+    }
+    let _ = write!(&mut details, " [engine: {}]", decision.engine);
+
+    eprintln!("{details}");
 }
 
 fn write_audit(config: &Config, command: &str, decision: &Decision) -> Result<()> {
@@ -576,8 +597,18 @@ mod tests {
     fn safe_shell_script_checks_dash_c_and_dash_lc() {
         let script = build_safe_shell_script(Path::new("/tmp/hooky")).expect("script generation");
 
+        assert!(script.starts_with("#!/bin/bash\n"));
         assert!(script.contains("\"${1:-}\" == \"-c\""));
         assert!(script.contains("\"${1:-}\" == \"-lc\""));
         assert!(script.contains("\"${1:-}\" == \"-l\" && \"${2:-}\" == \"-c\""));
+    }
+
+    #[test]
+    fn command_shim_uses_absolute_bash_shebang() {
+        let script =
+            build_command_shim_script("git", Path::new("/usr/bin/git"), Path::new("/tmp/hooky"))
+                .expect("script generation");
+
+        assert!(script.starts_with("#!/bin/bash\n"));
     }
 }
