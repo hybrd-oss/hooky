@@ -3,7 +3,7 @@
 
   # hooky
 
-  **A standalone command safety wrapper and policy evaluator for Codex**
+  **A configurable command firewall for shells and agents.**
 
   [![Rust](https://img.shields.io/badge/rust-%23000000.svg?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org/)
 </div>
