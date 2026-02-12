@@ -10,7 +10,7 @@ If you find a security issue, please report it even if you are on an older commi
 
 Please do **not** open a public GitHub issue for undisclosed vulnerabilities.
 
-Report privately by emailing: `security@hybrd.io`
+Report privately by emailing: `security@hybrd.com`
 
 Include:
 
