@@ -15,9 +15,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-const DEFAULT_CONFIG_PATH: &str = ".hooky.yml";
 const DEFAULT_SHIMS_DIR: &str = ".hooky/shims";
-const SHIM_COMMANDS: [&str; 6] = ["git", "rm", "mv", "curl", "bash", "sh"];
 const REQUIRED_GITIGNORE_PATTERNS: [&str; 2] = [".hooky/", ".hooky-log.jsonl"];
 
 #[derive(Parser)]
@@ -150,8 +148,7 @@ fn run_program(
         bail!("target program not found in PATH: {program}");
     }
 
-    let resolved_config = resolve_config_path(config_path);
-    let config = Config::load(Some(&resolved_config))?;
+    let config = load_effective_config(config_path)?;
     let doctor_report = doctor::run(&config)?;
     if !doctor_report.ok {
         bail!("doctor checks failed; run `hooky doctor` for details");
@@ -162,7 +159,7 @@ fn run_program(
 
     // `run` should be idempotent: refresh generated shims instead of failing
     // when they already exist from a prior `install-shims` or `run`.
-    install_shims(&shims_path, true, &current_exe)?;
+    install_shims(&shims_path, true, &current_exe, &config.shims.commands)?;
 
     let existing_path = std::env::var("PATH").unwrap_or_default();
     let combined_path = if existing_path.is_empty() {
@@ -177,10 +174,14 @@ fn run_program(
         .env("PATH", combined_path)
         .env("SHELL", &safe_shell)
         .env("HOOKY_BIN", &current_exe)
-        .env("HOOKY_CONFIG", &resolved_config)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
+    if let Some(path) = config_path {
+        cmd.env("HOOKY_CONFIG", path);
+    } else {
+        cmd.env_remove("HOOKY_CONFIG");
+    }
 
     let status = cmd
         .status()
@@ -201,11 +202,12 @@ fn program_exists(program: &str) -> bool {
 
 fn install_shims_command(dir: Option<&Path>, force: bool) -> Result<()> {
     maybe_sync_gitignore_patterns();
+    let config = load_effective_config(None)?;
 
     let current_exe = std::env::current_exe().context("failed to resolve current executable")?;
     let target_dir = dir.map_or_else(|| PathBuf::from(DEFAULT_SHIMS_DIR), Path::to_path_buf);
 
-    let installed = install_shims(&target_dir, force, &current_exe)?;
+    let installed = install_shims(&target_dir, force, &current_exe, &config.shims.commands)?;
     let response = CliResponse::success(InstallShimsResponse {
         dir: target_dir,
         files_installed: installed,
@@ -217,7 +219,12 @@ fn install_shims_command(dir: Option<&Path>, force: bool) -> Result<()> {
     Ok(())
 }
 
-fn install_shims(dir: &Path, force: bool, hooky_bin: &Path) -> Result<usize> {
+fn install_shims(
+    dir: &Path,
+    force: bool,
+    hooky_bin: &Path,
+    shim_commands: &[String],
+) -> Result<usize> {
     fs::create_dir_all(dir)
         .with_context(|| format!("failed to create shims directory {}", dir.display()))?;
 
@@ -226,7 +233,7 @@ fn install_shims(dir: &Path, force: bool, hooky_bin: &Path) -> Result<usize> {
     write_executable_script(&safe_shell_path, &safe_shell_script, force)?;
 
     let mut installed = 1usize;
-    for command_name in SHIM_COMMANDS {
+    for command_name in shim_commands {
         let real_path = resolve_binary_path(command_name, dir)
             .with_context(|| format!("failed to resolve binary path for {command_name}"))?;
         let shim_script = build_command_shim_script(command_name, &real_path, hooky_bin)?;
@@ -248,14 +255,18 @@ fn build_safe_shell_script(hooky_bin: &Path) -> Result<String> {
 set -euo pipefail
 
 HOOKY_BIN=\"${{HOOKY_BIN:-{bin}}}\"
-HOOKY_CONFIG=\"${{HOOKY_CONFIG:-{DEFAULT_CONFIG_PATH}}}\"
+HOOKY_CONFIG=\"${{HOOKY_CONFIG:-}}\"
+HOOKY_CONFIG_ARGS=()
+if [[ -n \"$HOOKY_CONFIG\" ]]; then
+  HOOKY_CONFIG_ARGS=(--config \"$HOOKY_CONFIG\")
+fi
 
 if [[ \"${{1:-}}\" == \"-c\" && -n \"${{2:-}}\" ]]; then
-  \"$HOOKY_BIN\" check-shell --quiet --config \"$HOOKY_CONFIG\" --cmd \"$2\"
+  \"$HOOKY_BIN\" check-shell --quiet \"${{HOOKY_CONFIG_ARGS[@]}}\" --cmd \"$2\"
 elif [[ \"${{1:-}}\" == \"-lc\" && -n \"${{2:-}}\" ]]; then
-  \"$HOOKY_BIN\" check-shell --quiet --config \"$HOOKY_CONFIG\" --cmd \"$2\"
+  \"$HOOKY_BIN\" check-shell --quiet \"${{HOOKY_CONFIG_ARGS[@]}}\" --cmd \"$2\"
 elif [[ \"${{1:-}}\" == \"-l\" && \"${{2:-}}\" == \"-c\" && -n \"${{3:-}}\" ]]; then
-  \"$HOOKY_BIN\" check-shell --quiet --config \"$HOOKY_CONFIG\" --cmd \"$3\"
+  \"$HOOKY_BIN\" check-shell --quiet \"${{HOOKY_CONFIG_ARGS[@]}}\" --cmd \"$3\"
 fi
 
 exec /bin/bash \"$@\"
@@ -280,9 +291,13 @@ fn build_command_shim_script(
 set -euo pipefail
 
 HOOKY_BIN=\"${{HOOKY_BIN:-{bin}}}\"
-HOOKY_CONFIG=\"${{HOOKY_CONFIG:-{DEFAULT_CONFIG_PATH}}}\"
+HOOKY_CONFIG=\"${{HOOKY_CONFIG:-}}\"
+HOOKY_CONFIG_ARGS=()
+if [[ -n \"$HOOKY_CONFIG\" ]]; then
+  HOOKY_CONFIG_ARGS=(--config \"$HOOKY_CONFIG\")
+fi
 
-\"$HOOKY_BIN\" check-argv --quiet --config \"$HOOKY_CONFIG\" --bin \"{command_name}\" -- \"$@\"
+\"$HOOKY_BIN\" check-argv --quiet \"${{HOOKY_CONFIG_ARGS[@]}}\" --bin \"{command_name}\" -- \"$@\"
 exec \"{real}\" \"$@\"
 "
     ))
@@ -382,14 +397,17 @@ fn is_trusted_bin_path(path: &Path) -> bool {
     TRUSTED_DIRS.iter().any(|trusted| path.starts_with(trusted))
 }
 
-fn resolve_config_path(config_path: Option<&Path>) -> PathBuf {
-    config_path.map_or_else(|| PathBuf::from(DEFAULT_CONFIG_PATH), Path::to_path_buf)
+fn load_effective_config(config_path: Option<&Path>) -> Result<Config> {
+    match config_path {
+        Some(path) => Config::load(Some(path)),
+        None => Config::load_merged(None),
+    }
 }
 
 fn run_doctor(config_path: Option<&Path>) -> Result<()> {
     maybe_sync_gitignore_patterns();
 
-    let config = Config::load(config_path)?;
+    let config = load_effective_config(config_path)?;
     let report = doctor::run(&config)?;
     let response = CliResponse::success(report);
     let json =
@@ -408,7 +426,7 @@ fn run_doctor(config_path: Option<&Path>) -> Result<()> {
 }
 
 fn run_check_shell(config_path: Option<&Path>, command: &str, quiet: bool) -> Result<()> {
-    let config = Config::load(config_path)?;
+    let config = load_effective_config(config_path)?;
     let decision = match evaluator::evaluate_shell_command(command, &config) {
         Ok(decision) => decision,
         Err(err) => fail_closed_decision(&err.to_string()),
@@ -438,7 +456,7 @@ fn run_check_argv(
     args: &[String],
     quiet: bool,
 ) -> Result<()> {
-    let config = Config::load(config_path)?;
+    let config = load_effective_config(config_path)?;
     let decision = match evaluator::evaluate_argv_command(bin, args, &config) {
         Ok(decision) => decision,
         Err(err) => fail_closed_decision(&err.to_string()),
