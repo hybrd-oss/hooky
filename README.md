@@ -29,6 +29,12 @@ Instead of waiting for every tool to implement its own safety checks, wrap your 
 
 ---
 
+## Specs
+
+See `docs/specs/00-overview.md` for the spec index and current implementation overview.
+
+---
+
 ## Current behavior
 
 - Deny-first policy (`allow`, `block`, `confirm`)
