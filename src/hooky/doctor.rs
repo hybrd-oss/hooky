@@ -67,7 +67,7 @@ pub fn run(config: &Config) -> Result<DoctorReport> {
                     ),
                 });
             }
-            EngineConfig::Native { enabled, rules } => {
+            EngineConfig::Native { enabled, rules, .. } => {
                 let ok = !enabled || !rules.is_empty();
                 checks.push(DoctorCheck {
                     name: "engine-native".to_string(),
@@ -121,6 +121,7 @@ mod tests {
         let config = Config {
             version: 1,
             mode: Mode::Enforce,
+            shims: crate::hooky::config::ShimsConfig::default(),
             engines: vec![EngineConfig::ClaudeHooks {
                 enabled: true,
                 hooks_dir: PathBuf::from("/definitely/missing/path"),

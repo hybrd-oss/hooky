@@ -70,7 +70,7 @@ fn run_engine(engine: &EngineConfig, command: &str) -> Result<Option<Decision>> 
             }
             run_dcg_engine(command, cmd, args)
         }
-        EngineConfig::Native { enabled, rules } => {
+        EngineConfig::Native { enabled, rules, .. } => {
             if !enabled {
                 return Ok(None);
             }
@@ -354,9 +354,11 @@ mod tests {
         Config {
             version: 1,
             mode: crate::hooky::config::Mode::Enforce,
+            shims: crate::hooky::config::ShimsConfig::default(),
             engines: vec![EngineConfig::Native {
                 enabled: true,
                 rules,
+                merge_strategy: crate::hooky::config::MergeStrategy::default(),
             }],
             combine: CombineConfig::default(),
             audit: AuditConfig {
@@ -403,6 +405,7 @@ mod tests {
         let config = Config {
             version: 1,
             mode: crate::hooky::config::Mode::Enforce,
+            shims: crate::hooky::config::ShimsConfig::default(),
             engines: vec![
                 EngineConfig::Native {
                     enabled: true,
@@ -412,6 +415,7 @@ mod tests {
                         pattern: "--force".to_string(),
                         rewrite: Some("git push --force-with-lease".to_string()),
                     }],
+                    merge_strategy: crate::hooky::config::MergeStrategy::default(),
                 },
                 EngineConfig::Native {
                     enabled: true,
@@ -421,6 +425,7 @@ mod tests {
                         pattern: "--force".to_string(),
                         rewrite: None,
                     }],
+                    merge_strategy: crate::hooky::config::MergeStrategy::default(),
                 },
             ],
             combine: CombineConfig::default(),

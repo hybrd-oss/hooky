@@ -9,6 +9,8 @@ pub struct Config {
     pub version: u32,
     #[serde(default)]
     pub mode: Mode,
+    #[serde(default)]
+    pub shims: ShimsConfig,
     #[serde(default = "default_engines")]
     pub engines: Vec<EngineConfig>,
     #[serde(default)]
@@ -23,6 +25,29 @@ pub enum Mode {
     #[default]
     Enforce,
     Audit,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeStrategy {
+    #[default]
+    Extend,
+    Replace,
+    Prepend,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ShimsConfig {
+    #[serde(default = "default_shim_commands")]
+    pub commands: Vec<String>,
+}
+
+impl Default for ShimsConfig {
+    fn default() -> Self {
+        Self {
+            commands: default_shim_commands(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -47,6 +72,8 @@ pub enum EngineConfig {
         enabled: bool,
         #[serde(default)]
         rules: Vec<NativeRule>,
+        #[serde(default)]
+        merge_strategy: MergeStrategy,
     },
     LocalHooks {
         #[serde(default)]
@@ -149,6 +176,51 @@ impl Config {
 
         self
     }
+
+    /// Load global configuration from ~/.hooky/config.yml
+    pub fn load_global() -> Result<Option<Self>> {
+        let global_path = dirs::home_dir()
+            .ok_or_else(|| anyhow::anyhow!("failed to determine home directory"))?
+            .join(".hooky")
+            .join("config.yml");
+
+        if !global_path.exists() {
+            return Ok(None);
+        }
+
+        let config = Self::load(Some(&global_path))?;
+        Ok(Some(config))
+    }
+
+    /// Load local configuration from project directory
+    pub fn load_local(path: Option<&Path>) -> Result<Option<Self>> {
+        let local_path = path.unwrap_or_else(|| Path::new(".hooky.yml"));
+
+        if !local_path.exists() {
+            return Ok(None);
+        }
+
+        let config = Self::load(Some(local_path))?;
+        Ok(Some(config))
+    }
+
+    /// Load and merge global and local configurations
+    pub fn load_merged(project_path: Option<&Path>) -> Result<Self> {
+        let global_config = Self::load_global()?;
+        let local_config = Self::load_local(project_path)?;
+
+        Ok(Self::merge(global_config, local_config))
+    }
+
+    /// Merge global and local configurations with precedence rules
+    fn merge(global: Option<Self>, local: Option<Self>) -> Self {
+        match (global, local) {
+            (None, None) => Self::default(),
+            (Some(g), None) => g,
+            (None, Some(l)) => l,
+            (Some(g), Some(l)) => merge_configs(&g, l),
+        }
+    }
 }
 
 impl Default for Config {
@@ -156,10 +228,127 @@ impl Default for Config {
         Self {
             version: default_version(),
             mode: Mode::Enforce,
+            shims: ShimsConfig::default(),
             engines: default_engines(),
             combine: CombineConfig::default(),
             audit: AuditConfig::default(),
         }
+    }
+}
+
+/// Merge global and local configurations
+fn merge_configs(global: &Config, local: Config) -> Config {
+    Config {
+        // Version: use local if set, otherwise global
+        version: if local.version == default_version() {
+            global.version
+        } else {
+            local.version
+        },
+        // Mode: local always overrides global
+        mode: local.mode,
+        // Shims: local overrides global (later we may want to merge these)
+        shims: local.shims,
+        // Engines: merge by type
+        engines: merge_engines(&global.engines, &local.engines),
+        // Combine: local overrides global
+        combine: local.combine,
+        // Audit: local always wins (logs stay project-local)
+        audit: local.audit,
+    }
+}
+
+/// Merge engine configurations by type
+fn merge_engines(global: &[EngineConfig], local: &[EngineConfig]) -> Vec<EngineConfig> {
+    let mut merged = Vec::new();
+
+    // Process each engine type
+    for engine_type in ["claude_hooks", "dcg", "native", "local_hooks"] {
+        let global_engine = find_engine_by_type(global, engine_type);
+        let local_engine = find_engine_by_type(local, engine_type);
+
+        if let Some(engine) = merge_engine(global_engine, local_engine) {
+            merged.push(engine);
+        }
+    }
+
+    // If no engines were merged, use default engines
+    if merged.is_empty() {
+        default_engines()
+    } else {
+        merged
+    }
+}
+
+/// Find an engine by its type name
+fn find_engine_by_type<'a>(
+    engines: &'a [EngineConfig],
+    type_name: &str,
+) -> Option<&'a EngineConfig> {
+    engines.iter().find(|e| {
+        matches!(
+            (e, type_name),
+            (EngineConfig::ClaudeHooks { .. }, "claude_hooks")
+                | (EngineConfig::Dcg { .. }, "dcg")
+                | (EngineConfig::Native { .. }, "native")
+                | (EngineConfig::LocalHooks { .. }, "local_hooks")
+        )
+    })
+}
+
+/// Merge two engine configurations of the same type
+fn merge_engine(
+    global: Option<&EngineConfig>,
+    local: Option<&EngineConfig>,
+) -> Option<EngineConfig> {
+    match (global, local) {
+        (None, None) => None,
+        (Some(g), None) => Some(g.clone()),
+        (None, Some(l)) => Some(l.clone()),
+        (Some(g), Some(l)) => Some(merge_same_engine(g, l)),
+    }
+}
+
+/// Merge two engines of the same type
+fn merge_same_engine(global: &EngineConfig, local: &EngineConfig) -> EngineConfig {
+    match (global, local) {
+        (
+            EngineConfig::Native {
+                enabled: _g_enabled,
+                rules: g_rules,
+                merge_strategy: _,
+            },
+            EngineConfig::Native {
+                enabled: l_enabled,
+                rules: l_rules,
+                merge_strategy: l_strategy,
+            },
+        ) => {
+            // For native engine, merge rules according to strategy
+            let merged_rules = match l_strategy {
+                MergeStrategy::Replace => l_rules.clone(),
+                MergeStrategy::Extend => {
+                    // Local rules first (higher precedence)
+                    let mut rules = l_rules.clone();
+                    rules.extend(g_rules.clone());
+                    rules
+                }
+                MergeStrategy::Prepend => {
+                    // Global rules first
+                    let mut rules = g_rules.clone();
+                    rules.extend(l_rules.clone());
+                    rules
+                }
+            };
+
+            EngineConfig::Native {
+                enabled: *l_enabled,
+                rules: merged_rules,
+                merge_strategy: l_strategy.clone(),
+            }
+        }
+        // For other engine types, local completely overrides global
+        (_, l) => l.clone(),
     }
 }
 
@@ -183,6 +372,17 @@ fn default_audit_path() -> PathBuf {
     PathBuf::from(".hooky-log.jsonl")
 }
 
+fn default_shim_commands() -> Vec<String> {
+    vec![
+        "git".to_string(),
+        "rm".to_string(),
+        "mv".to_string(),
+        "curl".to_string(),
+        "bash".to_string(),
+        "sh".to_string(),
+    ]
+}
+
 fn default_engines() -> Vec<EngineConfig> {
     vec![
         EngineConfig::ClaudeHooks {
@@ -197,6 +397,7 @@ fn default_engines() -> Vec<EngineConfig> {
         EngineConfig::Native {
             enabled: true,
             rules: default_native_rules(),
+            merge_strategy: MergeStrategy::default(),
         },
         EngineConfig::LocalHooks {
             enabled: false,
@@ -252,9 +453,11 @@ mod tests {
         let config = Config {
             version: 1,
             mode: Mode::Enforce,
+            shims: ShimsConfig::default(),
             engines: vec![EngineConfig::Native {
                 enabled: true,
                 rules: Vec::new(),
+                merge_strategy: MergeStrategy::default(),
             }],
             combine: CombineConfig::default(),
             audit: AuditConfig::default(),
@@ -267,5 +470,237 @@ mod tests {
             }
             _ => panic!("expected native engine"),
         }
+    }
+
+    #[test]
+    fn test_merge_extends_rules() {
+        let global = Config {
+            version: 1,
+            mode: Mode::Enforce,
+            shims: ShimsConfig::default(),
+            engines: vec![EngineConfig::Native {
+                enabled: true,
+                rules: vec![NativeRule {
+                    id: "global-rule".to_string(),
+                    action: NativeAction::Block,
+                    pattern: "global".to_string(),
+                    rewrite: None,
+                }],
+                merge_strategy: MergeStrategy::Extend,
+            }],
+            combine: CombineConfig::default(),
+            audit: AuditConfig::default(),
+        };
+
+        let local = Config {
+            version: 1,
+            mode: Mode::Enforce,
+            shims: ShimsConfig::default(),
+            engines: vec![EngineConfig::Native {
+                enabled: true,
+                rules: vec![NativeRule {
+                    id: "local-rule".to_string(),
+                    action: NativeAction::Block,
+                    pattern: "local".to_string(),
+                    rewrite: None,
+                }],
+                merge_strategy: MergeStrategy::Extend,
+            }],
+            combine: CombineConfig::default(),
+            audit: AuditConfig::default(),
+        };
+
+        let merged = merge_configs(&global, local);
+
+        match &merged.engines[0] {
+            EngineConfig::Native { rules, .. } => {
+                assert_eq!(rules.len(), 2);
+                assert_eq!(rules[0].id, "local-rule");
+                assert_eq!(rules[1].id, "global-rule");
+            }
+            _ => panic!("expected native engine"),
+        }
+    }
+
+    #[test]
+    fn test_merge_replaces_rules() {
+        let global = Config {
+            version: 1,
+            mode: Mode::Enforce,
+            shims: ShimsConfig::default(),
+            engines: vec![EngineConfig::Native {
+                enabled: true,
+                rules: vec![NativeRule {
+                    id: "global-rule".to_string(),
+                    action: NativeAction::Block,
+                    pattern: "global".to_string(),
+                    rewrite: None,
+                }],
+                merge_strategy: MergeStrategy::Extend,
+            }],
+            combine: CombineConfig::default(),
+            audit: AuditConfig::default(),
+        };
+
+        let local = Config {
+            version: 1,
+            mode: Mode::Enforce,
+            shims: ShimsConfig::default(),
+            engines: vec![EngineConfig::Native {
+                enabled: true,
+                rules: vec![NativeRule {
+                    id: "local-rule".to_string(),
+                    action: NativeAction::Block,
+                    pattern: "local".to_string(),
+                    rewrite: None,
+                }],
+                merge_strategy: MergeStrategy::Replace,
+            }],
+            combine: CombineConfig::default(),
+            audit: AuditConfig::default(),
+        };
+
+        let merged = merge_configs(&global, local);
+
+        match &merged.engines[0] {
+            EngineConfig::Native { rules, .. } => {
+                assert_eq!(rules.len(), 1);
+                assert_eq!(rules[0].id, "local-rule");
+            }
+            _ => panic!("expected native engine"),
+        }
+    }
+
+    #[test]
+    fn test_local_overrides_global_mode() {
+        let global = Config {
+            version: 1,
+            mode: Mode::Enforce,
+            shims: ShimsConfig::default(),
+            engines: vec![],
+            combine: CombineConfig::default(),
+            audit: AuditConfig::default(),
+        };
+
+        let local = Config {
+            version: 1,
+            mode: Mode::Audit,
+            shims: ShimsConfig::default(),
+            engines: vec![],
+            combine: CombineConfig::default(),
+            audit: AuditConfig::default(),
+        };
+
+        let merged = merge_configs(&global, local);
+        assert!(matches!(merged.mode, Mode::Audit));
+    }
+
+    #[test]
+    fn test_merge_with_prepend_strategy() {
+        let global = Config {
+            version: 1,
+            mode: Mode::Enforce,
+            shims: ShimsConfig::default(),
+            engines: vec![EngineConfig::Native {
+                enabled: true,
+                rules: vec![NativeRule {
+                    id: "global-rule".to_string(),
+                    action: NativeAction::Block,
+                    pattern: "global".to_string(),
+                    rewrite: None,
+                }],
+                merge_strategy: MergeStrategy::Extend,
+            }],
+            combine: CombineConfig::default(),
+            audit: AuditConfig::default(),
+        };
+
+        let local = Config {
+            version: 1,
+            mode: Mode::Enforce,
+            shims: ShimsConfig::default(),
+            engines: vec![EngineConfig::Native {
+                enabled: true,
+                rules: vec![NativeRule {
+                    id: "local-rule".to_string(),
+                    action: NativeAction::Block,
+                    pattern: "local".to_string(),
+                    rewrite: None,
+                }],
+                merge_strategy: MergeStrategy::Prepend,
+            }],
+            combine: CombineConfig::default(),
+            audit: AuditConfig::default(),
+        };
+
+        let merged = merge_configs(&global, local);
+
+        match &merged.engines[0] {
+            EngineConfig::Native { rules, .. } => {
+                assert_eq!(rules.len(), 2);
+                // With Prepend, global rules come first
+                assert_eq!(rules[0].id, "global-rule");
+                assert_eq!(rules[1].id, "local-rule");
+            }
+            _ => panic!("expected native engine"),
+        }
+    }
+
+    #[test]
+    fn test_load_merged_with_no_configs() {
+        // This tests the case where neither global nor local configs exist
+        // It should return the default config
+        let merged = Config::merge(None, None);
+        assert_eq!(merged.version, 1);
+        assert!(matches!(merged.mode, Mode::Enforce));
+    }
+
+    #[test]
+    fn test_load_merged_with_only_global() {
+        let global = Config {
+            version: 1,
+            mode: Mode::Audit,
+            shims: ShimsConfig::default(),
+            engines: vec![],
+            combine: CombineConfig::default(),
+            audit: AuditConfig::default(),
+        };
+
+        let merged = Config::merge(Some(global), None);
+        assert!(matches!(merged.mode, Mode::Audit));
+    }
+
+    #[test]
+    fn test_load_merged_with_only_local() {
+        let local = Config {
+            version: 1,
+            mode: Mode::Audit,
+            shims: ShimsConfig::default(),
+            engines: vec![],
+            combine: CombineConfig::default(),
+            audit: AuditConfig::default(),
+        };
+
+        let merged = Config::merge(None, Some(local));
+        assert!(matches!(merged.mode, Mode::Audit));
+    }
+
+    #[test]
+    fn default_shims_config_has_expected_commands() {
+        let shims = ShimsConfig::default();
+        assert_eq!(shims.commands.len(), 6);
+        assert!(shims.commands.contains(&"git".to_string()));
+        assert!(shims.commands.contains(&"rm".to_string()));
+        assert!(shims.commands.contains(&"mv".to_string()));
+        assert!(shims.commands.contains(&"curl".to_string()));
+        assert!(shims.commands.contains(&"bash".to_string()));
+        assert!(shims.commands.contains(&"sh".to_string()));
+    }
+
+    #[test]
+    fn default_config_includes_shims() {
+        let config = Config::default();
+        assert_eq!(config.shims.commands.len(), 6);
+        assert!(config.shims.commands.contains(&"git".to_string()));
     }
 }
