@@ -12,6 +12,23 @@
 
 ---
 
+## Why Hooky?
+
+**Claude Code's hooks are great** (shout out to [DCG](https://github.com/dcgoss/dcg-claude-hooks)!)—they prevent dangerous commands like `git commit --no-verify` or `git push --force` from running inside Claude Code sessions. But **Codex doesn't have any support for this**.
+
+We built Hooky to solve exactly that problem: **run all your Claude Code hooks with Codex** (and any other shell-based tool).
+
+Hooky acts as a universal command firewall that intercepts commands at the shell level:
+
+- **Bring Claude Code safety to Codex**: Your existing Claude Code hooks (block `--no-verify`, `--force`, etc.) work automatically
+- **Universal enforcement**: Works with Codex, Claude Code, bash scripts, or any tool that runs shell commands
+- **Audit logging**: JSONL logs capture every command decision with secret redaction
+- **Extensible**: Add custom rules beyond the Claude Code hook format
+
+Instead of waiting for every tool to implement its own safety checks, wrap your agent in `hooky run` and get consistent protection everywhere.
+
+---
+
 ## Current behavior
 
 - Deny-first policy (`allow`, `block`, `confirm`)
