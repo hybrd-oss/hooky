@@ -14,7 +14,7 @@
 
 ## Why Hooky?
 
-**Claude Code's hooks are great** (shout out to [DCG](github.com/dicklesworthstone/destructive_command_guard)!). They prevent dangerous commands like `git commit --no-verify` or `git push --force` from running inside Claude Code sessions. But for some wild reason, Codex doesn't have any support for this.
+**Claude Code's hooks are great** (shout out to [DCG](github.com/dicklesworthstone/destructive_command_guard)). They prevent dangerous commands like `git commit --no-verify` or `git push --force` from running inside Claude Code sessions. But for some wild reason, Codex doesn't have any support for this.
 
 Agents work best in yolo mode, you just need to give them some bowling bumpers when they're speeding down the lane. Hooky is the bowling bumpers to any of your workloads (I don't think that was gramatically correct).
 
