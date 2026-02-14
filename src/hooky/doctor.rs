@@ -34,20 +34,22 @@ pub fn run(config: &Config) -> Result<DoctorReport> {
     for engine in &config.engines {
         match engine {
             EngineConfig::ClaudeHooks { enabled, hooks_dir } => {
-                let ok = !enabled || hooks_dir.exists();
+                let hooks_dir_exists = hooks_dir.exists();
                 checks.push(DoctorCheck {
                     name: "engine-claude-hooks".to_string(),
-                    ok,
                     details: format!(
                         "enabled={}, hooks_dir={}{}",
                         enabled,
                         hooks_dir.display(),
-                        if *enabled && !ok {
-                            " (missing hooks dir)"
+                        if *enabled && !hooks_dir_exists {
+                            " (missing hooks dir; engine will be skipped)"
                         } else {
                             ""
                         }
                     ),
+                    // Missing Claude hooks should not fail doctor:
+                    // evaluator treats absent hook scripts as no-op.
+                    ok: true,
                 });
             }
             EngineConfig::Dcg { enabled, cmd, .. } => {
@@ -117,7 +119,7 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn doctor_fails_when_enabled_claude_hooks_dir_missing() {
+    fn doctor_allows_when_enabled_claude_hooks_dir_missing() {
         let config = Config {
             version: 1,
             mode: Mode::Enforce,
@@ -133,7 +135,8 @@ mod tests {
         };
 
         let report = run(&config).expect("doctor should return report");
-        assert!(!report.ok);
+        assert!(report.ok);
         assert_eq!(report.checks[2].name, "engine-claude-hooks");
+        assert!(report.checks[2].details.contains("engine will be skipped"));
     }
 }
