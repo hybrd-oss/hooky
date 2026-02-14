@@ -66,6 +66,12 @@ pub enum EngineConfig {
         cmd: String,
         #[serde(default)]
         args: Vec<String>,
+        #[serde(default)]
+        config: Option<PathBuf>,
+        #[serde(default)]
+        with_packs: Vec<String>,
+        #[serde(default)]
+        explain: bool,
     },
     Native {
         #[serde(default = "default_true")]
@@ -393,6 +399,9 @@ fn default_engines() -> Vec<EngineConfig> {
             enabled: false,
             cmd: default_dcg_cmd(),
             args: Vec::new(),
+            config: None,
+            with_packs: Vec::new(),
+            explain: false,
         },
         EngineConfig::Native {
             enabled: true,

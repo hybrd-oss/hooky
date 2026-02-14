@@ -223,3 +223,63 @@ fn run_is_idempotent_after_install_shims() {
         .success()
         .stdout(predicate::str::contains("hooky-idempotent"));
 }
+
+#[test]
+fn setup_dcg_writes_enabled_dcg_engine_config() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let config_path = temp.path().join("hooky.yml");
+
+    Command::new(env!("CARGO_BIN_EXE_hooky"))
+        .current_dir(temp.path())
+        .args([
+            "setup",
+            "dcg",
+            "--config",
+            config_path.to_str().expect("path should be valid utf-8"),
+            "--dcg-config",
+            "/tmp/dcg.toml",
+            "--with-pack",
+            "containers.docker",
+            "--explain",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"enabled\": true"));
+
+    let written = fs::read_to_string(&config_path).expect("config should be written");
+    assert!(written.contains("type: dcg"));
+    assert!(written.contains("enabled: true"));
+    assert!(written.contains("config: /tmp/dcg.toml"));
+    assert!(written.contains("with_packs:"));
+    assert!(written.contains("containers.docker"));
+    assert!(written.contains("explain: true"));
+}
+
+#[test]
+fn import_dcg_points_hooky_to_existing_dcg_config() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let dcg_path = temp.path().join(".dcg.toml");
+    let hooky_config_path = temp.path().join("hooky.yml");
+    fs::write(&dcg_path, "# test config\n").expect("dcg config should be created");
+
+    Command::new(env!("CARGO_BIN_EXE_hooky"))
+        .current_dir(temp.path())
+        .args([
+            "import",
+            "dcg",
+            "--from",
+            dcg_path.to_str().expect("path should be valid utf-8"),
+            "--config",
+            hooky_config_path
+                .to_str()
+                .expect("path should be valid utf-8"),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("imported_from"));
+
+    let written = fs::read_to_string(&hooky_config_path).expect("config should be written");
+    assert!(written.contains("type: dcg"));
+    assert!(written.contains("enabled: true"));
+    assert!(written.contains(&format!("config: {}", dcg_path.display())));
+}

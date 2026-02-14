@@ -64,11 +64,18 @@ fn run_engine(engine: &EngineConfig, command: &str) -> Result<Option<Decision>> 
             }
             run_claude_hook_engine(command, hooks_dir)
         }
-        EngineConfig::Dcg { enabled, cmd, args } => {
+        EngineConfig::Dcg {
+            enabled,
+            cmd,
+            args,
+            config,
+            with_packs,
+            explain,
+        } => {
             if !enabled {
                 return Ok(None);
             }
-            run_dcg_engine(command, cmd, args)
+            run_dcg_engine(command, cmd, args, config.as_deref(), with_packs, *explain)
         }
         EngineConfig::Native { enabled, rules, .. } => {
             if !enabled {
@@ -137,46 +144,27 @@ fn run_claude_hook_engine(command: &str, hooks_dir: &Path) -> Result<Option<Deci
     )))
 }
 
-fn run_dcg_engine(command: &str, cmd: &str, args: &[String]) -> Result<Option<Decision>> {
+fn run_dcg_engine(
+    command: &str,
+    cmd: &str,
+    args: &[String],
+    config_path: Option<&Path>,
+    with_packs: &[String],
+    explain: bool,
+) -> Result<Option<Decision>> {
     if !command_exists(cmd) {
         bail!("dcg engine command not found: {cmd}");
     }
 
-    let mut expanded_args = Vec::new();
-    let mut has_placeholder = false;
-    for arg in args {
-        if arg.contains("{command}") {
-            has_placeholder = true;
-            expanded_args.push(arg.replace("{command}", command));
-        } else {
-            expanded_args.push(arg.clone());
-        }
-    }
+    let expanded_args = build_dcg_test_args(command, args, config_path, with_packs, explain);
 
-    if !has_placeholder {
-        expanded_args.push(command.to_string());
-    }
-
-    let payload = json!({
-        "command": command,
-    });
-
-    let mut child = Command::new(cmd)
+    let child = Command::new(cmd)
         .args(&expanded_args)
-        .stdin(Stdio::piped())
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .with_context(|| format!("failed to start dcg engine command: {cmd}"))?;
-
-    if let Some(stdin) = &mut child.stdin {
-        use std::io::Write;
-        let payload_string =
-            serde_json::to_string(&payload).context("failed to serialize dcg payload")?;
-        stdin
-            .write_all(payload_string.as_bytes())
-            .context("failed writing dcg stdin")?;
-    }
 
     let output = child
         .wait_with_output()
@@ -188,6 +176,50 @@ fn run_dcg_engine(command: &str, cmd: &str, args: &[String]) -> Result<Option<De
         &output.stdout,
         &output.stderr,
     )))
+}
+
+fn build_dcg_test_args(
+    command: &str,
+    passthrough_args: &[String],
+    config_path: Option<&Path>,
+    with_packs: &[String],
+    explain: bool,
+) -> Vec<String> {
+    let mut args = vec![
+        "test".to_string(),
+        "--format".to_string(),
+        "json".to_string(),
+        "--no-color".to_string(),
+    ];
+
+    if let Some(path) = config_path {
+        args.push("--config".to_string());
+        args.push(path.display().to_string());
+    }
+
+    for pack in with_packs {
+        args.push("--with-packs".to_string());
+        args.push(pack.clone());
+    }
+
+    if explain {
+        args.push("--explain".to_string());
+    }
+
+    let mut has_placeholder = false;
+    for arg in passthrough_args {
+        if arg.contains("{command}") {
+            has_placeholder = true;
+            args.push(arg.replace("{command}", command));
+        } else {
+            args.push(arg.clone());
+        }
+    }
+
+    if !has_placeholder {
+        args.push(command.to_string());
+    }
+    args
 }
 
 fn parse_dcg_decision(command: &str, success: bool, stdout: &[u8], stderr: &[u8]) -> Decision {
@@ -470,5 +502,34 @@ mod tests {
     fn dcg_plain_text_allow_uses_exit_status() {
         let decision = parse_dcg_decision("echo hi", true, b"", b"");
         assert_eq!(decision.kind, DecisionKind::Allow);
+    }
+
+    #[test]
+    fn dcg_test_args_include_expected_defaults_and_config() {
+        let args = build_dcg_test_args(
+            "git push --force",
+            &[],
+            Some(Path::new("/tmp/dcg.toml")),
+            &[
+                String::from("containers.docker"),
+                String::from("database.postgresql"),
+            ],
+            true,
+        );
+
+        assert_eq!(args[0], "test");
+        assert!(args.contains(&"--format".to_string()));
+        assert!(args.contains(&"json".to_string()));
+        assert!(args.contains(&"--no-color".to_string()));
+        assert!(args.contains(&"--config".to_string()));
+        assert!(args.contains(&"/tmp/dcg.toml".to_string()));
+        assert!(args.contains(&"--with-packs".to_string()));
+        assert!(args.contains(&"containers.docker".to_string()));
+        assert!(args.contains(&"database.postgresql".to_string()));
+        assert!(args.contains(&"--explain".to_string()));
+        assert_eq!(
+            args.last().expect("command argument should be present"),
+            "git push --force"
+        );
     }
 }

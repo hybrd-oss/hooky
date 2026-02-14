@@ -51,6 +51,7 @@ cargo install --path . --force
 hooky doctor
 hooky check-shell --cmd "git commit --no-verify -m test"
 hooky install-shims
+hooky setup dcg
 hooky run -- codex --help
 hooky run -- claude --help
 hooky run -- bash -lc "git status"
@@ -146,5 +147,27 @@ This is command-level interception via shell and PATH shims (not kernel/syscall 
 ## Configuration
 
 Default config file: `.hooky.yml` (optional).
+
+### DCG setup (easy path)
+
+Enable DCG integration in one command:
+
+```bash
+hooky setup dcg
+```
+
+Import an existing DCG config file:
+
+```bash
+hooky import dcg --from .dcg.toml
+```
+
+Optional setup flags:
+
+- `--dcg-config <path>`: set `dcg test --config <path>`
+- `--with-pack <pack>`: add one or more `--with-packs` entries
+- `--explain`: enable DCG explain mode
+
+When enabled, hooky invokes DCG using `dcg test --format json --no-color ...` and parses the JSON decision.
 
 See `plan.md` for implementation roadmap.

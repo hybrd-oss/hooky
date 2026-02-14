@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand};
 use hooky::hooky::audit::{append_event, AuditEvent};
-use hooky::hooky::config::Config;
+use hooky::hooky::config::{Config, EngineConfig};
 use hooky::hooky::decision::{Decision, DecisionKind};
 use hooky::hooky::{doctor, evaluator};
 use hooky::types::response::CliResponse;
@@ -95,6 +95,62 @@ enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+
+    /// Guided setup helpers
+    Setup {
+        #[command(subcommand)]
+        setup: SetupCommands,
+    },
+
+    /// Import settings from external tools
+    Import {
+        #[command(subcommand)]
+        import: ImportCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum SetupCommands {
+    /// Enable and configure the DCG engine in hooky config
+    Dcg {
+        /// Path to .hooky.yml
+        #[arg(long)]
+        config: Option<PathBuf>,
+
+        /// DCG executable command
+        #[arg(long)]
+        cmd: Option<String>,
+
+        /// Path to DCG config file
+        #[arg(long)]
+        dcg_config: Option<PathBuf>,
+
+        /// DCG pack to enable (can be provided multiple times)
+        #[arg(long = "with-pack")]
+        with_packs: Vec<String>,
+
+        /// Enable DCG explain output
+        #[arg(long)]
+        explain: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum ImportCommands {
+    /// Import an existing DCG configuration into hooky
+    Dcg {
+        /// Path to DCG config file (for example: .dcg.toml)
+        #[arg(long)]
+        from: PathBuf,
+
+        /// Path to .hooky.yml
+        #[arg(long)]
+        config: Option<PathBuf>,
+
+        /// DCG executable command
+        #[arg(long)]
+        cmd: Option<String>,
+    },
 }
 
 fn main() {
@@ -132,6 +188,26 @@ fn run() -> Result<()> {
             config,
             quiet,
         } => run_check_argv(config.as_deref(), &bin, &args, quiet),
+        Commands::Setup { setup } => match setup {
+            SetupCommands::Dcg {
+                config,
+                cmd,
+                dcg_config,
+                with_packs,
+                explain,
+            } => run_setup_dcg(
+                config.as_deref(),
+                cmd.as_deref(),
+                dcg_config.as_deref(),
+                &with_packs,
+                explain,
+            ),
+        },
+        Commands::Import { import } => match import {
+            ImportCommands::Dcg { from, config, cmd } => {
+                run_import_dcg(&from, config.as_deref(), cmd.as_deref())
+            }
+        },
     }
 }
 
@@ -630,6 +706,110 @@ fn normalize_gitignore_pattern(pattern: &str) -> String {
         .map_or_else(String::new, |value| value.trim().to_string())
 }
 
+fn run_setup_dcg(
+    config_path: Option<&Path>,
+    dcg_cmd: Option<&str>,
+    dcg_config: Option<&Path>,
+    with_packs: &[String],
+    explain: bool,
+) -> Result<()> {
+    let config_path = config_path.map_or_else(|| PathBuf::from(".hooky.yml"), Path::to_path_buf);
+    let mut config = Config::load(Some(&config_path))?;
+
+    upsert_dcg_engine(
+        &mut config,
+        true,
+        dcg_cmd.unwrap_or("dcg"),
+        dcg_config,
+        with_packs,
+        explain,
+    );
+    write_config_file(&config_path, &config)?;
+
+    let response = CliResponse::success(SetupDcgResponse {
+        config_path,
+        enabled: true,
+        dcg_cmd: dcg_cmd.unwrap_or("dcg").to_string(),
+        dcg_config: dcg_config.map(Path::to_path_buf),
+        with_packs: with_packs.to_vec(),
+        explain,
+    });
+    let json =
+        serde_json::to_string_pretty(&response).context("failed to serialize setup response")?;
+    println!("{json}");
+    Ok(())
+}
+
+fn run_import_dcg(from: &Path, config_path: Option<&Path>, dcg_cmd: Option<&str>) -> Result<()> {
+    if !from.exists() {
+        bail!("dcg config file not found: {}", from.display());
+    }
+
+    let config_path = config_path.map_or_else(|| PathBuf::from(".hooky.yml"), Path::to_path_buf);
+    let mut config = Config::load(Some(&config_path))?;
+    upsert_dcg_engine(
+        &mut config,
+        true,
+        dcg_cmd.unwrap_or("dcg"),
+        Some(from),
+        &[],
+        false,
+    );
+    write_config_file(&config_path, &config)?;
+
+    let response = CliResponse::success(ImportDcgResponse {
+        config_path,
+        imported_from: from.to_path_buf(),
+        dcg_cmd: dcg_cmd.unwrap_or("dcg").to_string(),
+    });
+    let json =
+        serde_json::to_string_pretty(&response).context("failed to serialize import response")?;
+    println!("{json}");
+    Ok(())
+}
+
+fn upsert_dcg_engine(
+    config: &mut Config,
+    enabled: bool,
+    cmd: &str,
+    dcg_config: Option<&Path>,
+    with_packs: &[String],
+    explain: bool,
+) {
+    let mut replaced = false;
+    for engine in &mut config.engines {
+        if matches!(engine, EngineConfig::Dcg { .. }) {
+            *engine = EngineConfig::Dcg {
+                enabled,
+                cmd: cmd.to_string(),
+                args: Vec::new(),
+                config: dcg_config.map(Path::to_path_buf),
+                with_packs: with_packs.to_vec(),
+                explain,
+            };
+            replaced = true;
+            break;
+        }
+    }
+
+    if !replaced {
+        config.engines.push(EngineConfig::Dcg {
+            enabled,
+            cmd: cmd.to_string(),
+            args: Vec::new(),
+            config: dcg_config.map(Path::to_path_buf),
+            with_packs: with_packs.to_vec(),
+            explain,
+        });
+    }
+}
+
+fn write_config_file(path: &Path, config: &Config) -> Result<()> {
+    let yaml = serde_yaml::to_string(config).context("failed to serialize hooky config to yaml")?;
+    fs::write(path, yaml).with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(())
+}
+
 #[derive(serde::Serialize)]
 struct CheckResponse {
     command: String,
@@ -640,6 +820,23 @@ struct CheckResponse {
 struct InstallShimsResponse {
     dir: PathBuf,
     files_installed: usize,
+}
+
+#[derive(serde::Serialize)]
+struct SetupDcgResponse {
+    config_path: PathBuf,
+    enabled: bool,
+    dcg_cmd: String,
+    dcg_config: Option<PathBuf>,
+    with_packs: Vec<String>,
+    explain: bool,
+}
+
+#[derive(serde::Serialize)]
+struct ImportDcgResponse {
+    config_path: PathBuf,
+    imported_from: PathBuf,
+    dcg_cmd: String,
 }
 
 #[cfg(test)]
