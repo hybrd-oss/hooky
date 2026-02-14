@@ -156,10 +156,22 @@ fn run_program(
 
     let current_exe = std::env::current_exe().context("failed to resolve current executable")?;
     let shims_path = shims_dir.map_or_else(|| PathBuf::from(DEFAULT_SHIMS_DIR), Path::to_path_buf);
+    let shim_config_path = config_path.map(|path| {
+        fs::canonicalize(path)
+            .unwrap_or_else(|_| path.to_path_buf())
+            .display()
+            .to_string()
+    });
 
     // `run` should be idempotent: refresh generated shims instead of failing
     // when they already exist from a prior `install-shims` or `run`.
-    install_shims(&shims_path, true, &current_exe, &config.shims.commands)?;
+    install_shims(
+        &shims_path,
+        true,
+        &current_exe,
+        shim_config_path.as_deref(),
+        &config.shims.commands,
+    )?;
 
     let existing_path = std::env::var("PATH").unwrap_or_default();
     let combined_path = if existing_path.is_empty() {
@@ -173,15 +185,9 @@ fn run_program(
     cmd.args(program_args)
         .env("PATH", combined_path)
         .env("SHELL", &safe_shell)
-        .env("HOOKY_BIN", &current_exe)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    if let Some(path) = config_path {
-        cmd.env("HOOKY_CONFIG", path);
-    } else {
-        cmd.env_remove("HOOKY_CONFIG");
-    }
 
     let status = cmd
         .status()
@@ -207,7 +213,13 @@ fn install_shims_command(dir: Option<&Path>, force: bool) -> Result<()> {
     let current_exe = std::env::current_exe().context("failed to resolve current executable")?;
     let target_dir = dir.map_or_else(|| PathBuf::from(DEFAULT_SHIMS_DIR), Path::to_path_buf);
 
-    let installed = install_shims(&target_dir, force, &current_exe, &config.shims.commands)?;
+    let installed = install_shims(
+        &target_dir,
+        force,
+        &current_exe,
+        None,
+        &config.shims.commands,
+    )?;
     let response = CliResponse::success(InstallShimsResponse {
         dir: target_dir,
         files_installed: installed,
@@ -223,20 +235,22 @@ fn install_shims(
     dir: &Path,
     force: bool,
     hooky_bin: &Path,
+    config_path: Option<&str>,
     shim_commands: &[String],
 ) -> Result<usize> {
     fs::create_dir_all(dir)
         .with_context(|| format!("failed to create shims directory {}", dir.display()))?;
 
     let safe_shell_path = dir.join("hooky-shell");
-    let safe_shell_script = build_safe_shell_script(hooky_bin)?;
+    let safe_shell_script = build_safe_shell_script(hooky_bin, config_path)?;
     write_executable_script(&safe_shell_path, &safe_shell_script, force)?;
 
     let mut installed = 1usize;
     for command_name in shim_commands {
         let real_path = resolve_binary_path(command_name, dir)
             .with_context(|| format!("failed to resolve binary path for {command_name}"))?;
-        let shim_script = build_command_shim_script(command_name, &real_path, hooky_bin)?;
+        let shim_script =
+            build_command_shim_script(command_name, &real_path, hooky_bin, config_path)?;
         let shim_path = dir.join(command_name);
         write_executable_script(&shim_path, &shim_script, force)?;
         installed += 1;
@@ -245,28 +259,24 @@ fn install_shims(
     Ok(installed)
 }
 
-fn build_safe_shell_script(hooky_bin: &Path) -> Result<String> {
+fn build_safe_shell_script(hooky_bin: &Path, config_path: Option<&str>) -> Result<String> {
     let bin = hooky_bin
         .to_str()
         .ok_or_else(|| anyhow!("hooky binary path is not valid UTF-8"))?;
+    let config_arg = build_config_arg(config_path);
 
     Ok(format!(
         "#!/bin/bash
 set -euo pipefail
 
-HOOKY_BIN=\"${{HOOKY_BIN:-{bin}}}\"
-HOOKY_CONFIG=\"${{HOOKY_CONFIG:-}}\"
-HOOKY_CONFIG_ARGS=()
-if [[ -n \"$HOOKY_CONFIG\" ]]; then
-  HOOKY_CONFIG_ARGS=(--config \"$HOOKY_CONFIG\")
-fi
+HOOKY_BIN=\"{bin}\"
 
 if [[ \"${{1:-}}\" == \"-c\" && -n \"${{2:-}}\" ]]; then
-  \"$HOOKY_BIN\" check-shell --quiet \"${{HOOKY_CONFIG_ARGS[@]}}\" --cmd \"$2\"
+  \"$HOOKY_BIN\" check-shell --quiet {config_arg}--cmd \"$2\"
 elif [[ \"${{1:-}}\" == \"-lc\" && -n \"${{2:-}}\" ]]; then
-  \"$HOOKY_BIN\" check-shell --quiet \"${{HOOKY_CONFIG_ARGS[@]}}\" --cmd \"$2\"
+  \"$HOOKY_BIN\" check-shell --quiet {config_arg}--cmd \"$2\"
 elif [[ \"${{1:-}}\" == \"-l\" && \"${{2:-}}\" == \"-c\" && -n \"${{3:-}}\" ]]; then
-  \"$HOOKY_BIN\" check-shell --quiet \"${{HOOKY_CONFIG_ARGS[@]}}\" --cmd \"$3\"
+  \"$HOOKY_BIN\" check-shell --quiet {config_arg}--cmd \"$3\"
 fi
 
 exec /bin/bash \"$@\"
@@ -278,6 +288,7 @@ fn build_command_shim_script(
     command_name: &str,
     real_path: &Path,
     hooky_bin: &Path,
+    config_path: Option<&str>,
 ) -> Result<String> {
     let real = real_path
         .to_str()
@@ -285,22 +296,24 @@ fn build_command_shim_script(
     let bin = hooky_bin
         .to_str()
         .ok_or_else(|| anyhow!("hooky binary path is not valid UTF-8"))?;
+    let config_arg = build_config_arg(config_path);
 
     Ok(format!(
         "#!/bin/bash
 set -euo pipefail
 
-HOOKY_BIN=\"${{HOOKY_BIN:-{bin}}}\"
-HOOKY_CONFIG=\"${{HOOKY_CONFIG:-}}\"
-HOOKY_CONFIG_ARGS=()
-if [[ -n \"$HOOKY_CONFIG\" ]]; then
-  HOOKY_CONFIG_ARGS=(--config \"$HOOKY_CONFIG\")
-fi
+HOOKY_BIN=\"{bin}\"
 
-\"$HOOKY_BIN\" check-argv --quiet \"${{HOOKY_CONFIG_ARGS[@]}}\" --bin \"{command_name}\" -- \"$@\"
+\"$HOOKY_BIN\" check-argv --quiet {config_arg}--bin \"{command_name}\" -- \"$@\"
 exec \"{real}\" \"$@\"
 "
     ))
+}
+
+fn build_config_arg(config_path: Option<&str>) -> String {
+    config_path
+        .map(|path| format!("--config \"{path}\" "))
+        .unwrap_or_default()
 }
 
 fn write_executable_script(path: &Path, contents: &str, force: bool) -> Result<()> {
@@ -678,7 +691,8 @@ mod tests {
 
     #[test]
     fn safe_shell_script_checks_dash_c_and_dash_lc() {
-        let script = build_safe_shell_script(Path::new("/tmp/hooky")).expect("script generation");
+        let script =
+            build_safe_shell_script(Path::new("/tmp/hooky"), None).expect("script generation");
 
         assert!(script.starts_with("#!/bin/bash\n"));
         assert!(script.contains("\"${1:-}\" == \"-c\""));
@@ -687,12 +701,43 @@ mod tests {
     }
 
     #[test]
+    fn safe_shell_script_ignores_runtime_env_overrides() {
+        let script = build_safe_shell_script(Path::new("/tmp/hooky"), Some("/tmp/hooky.yml"))
+            .expect("script generation");
+
+        assert!(script.contains("HOOKY_BIN=\"/tmp/hooky\""));
+        assert!(script.contains("--config \"/tmp/hooky.yml\" --cmd"));
+        assert!(!script.contains("${HOOKY_BIN:-"));
+        assert!(!script.contains("${HOOKY_CONFIG:-"));
+    }
+
+    #[test]
     fn command_shim_uses_absolute_bash_shebang() {
-        let script =
-            build_command_shim_script("git", Path::new("/usr/bin/git"), Path::new("/tmp/hooky"))
-                .expect("script generation");
+        let script = build_command_shim_script(
+            "git",
+            Path::new("/usr/bin/git"),
+            Path::new("/tmp/hooky"),
+            None,
+        )
+        .expect("script generation");
 
         assert!(script.starts_with("#!/bin/bash\n"));
+    }
+
+    #[test]
+    fn command_shim_ignores_runtime_env_overrides() {
+        let script = build_command_shim_script(
+            "git",
+            Path::new("/usr/bin/git"),
+            Path::new("/tmp/hooky"),
+            Some("/tmp/hooky.yml"),
+        )
+        .expect("script generation");
+
+        assert!(script.contains("HOOKY_BIN=\"/tmp/hooky\""));
+        assert!(script.contains("check-argv --quiet --config \"/tmp/hooky.yml\" --bin \"git\""));
+        assert!(!script.contains("${HOOKY_BIN:-"));
+        assert!(!script.contains("${HOOKY_CONFIG:-"));
     }
 
     #[test]
