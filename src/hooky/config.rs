@@ -95,6 +95,20 @@ pub struct NativeRule {
     pub action: NativeAction,
     pub pattern: String,
     pub rewrite: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub argv_match: Option<ArgvMatch>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ArgvMatch {
+    /// Binary name (e.g., `git`). Empty string means any binary.
+    pub bin: String,
+    /// Subcommands that must be present (e.g., `commit`). Empty = no subcommand required.
+    #[serde(default)]
+    pub subcommands: Vec<String>,
+    /// Flags to block on (e.g., `--no-verify`, `-n`). Empty = no flag check.
+    #[serde(default)]
+    pub flags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -468,20 +482,35 @@ fn default_native_rules() -> Vec<NativeRule> {
         NativeRule {
             id: "block-no-verify".to_string(),
             action: NativeAction::Block,
-            pattern: r"(--no-verify|--no-gpg-sign|-n\b.*commit)".to_string(),
+            pattern: r"(--no-verify|--no-gpg-sign|-n\b.*commit|commit.*\s-n\b)".to_string(),
             rewrite: None,
+            argv_match: Some(ArgvMatch {
+                bin: "git".to_string(),
+                subcommands: vec!["commit".to_string()],
+                flags: vec![
+                    "--no-verify".to_string(),
+                    "--no-gpg-sign".to_string(),
+                    "-n".to_string(),
+                ],
+            }),
         },
         NativeRule {
             id: "block-skip-env".to_string(),
             action: NativeAction::Block,
             pattern: r"^\s*SKIP=".to_string(),
             rewrite: None,
+            argv_match: None,
         },
         NativeRule {
             id: "block-force-push".to_string(),
             action: NativeAction::Block,
             pattern: r"\bgit\s+push\b.*\s--force(\s|$)".to_string(),
             rewrite: None,
+            argv_match: Some(ArgvMatch {
+                bin: "git".to_string(),
+                subcommands: vec!["push".to_string()],
+                flags: vec!["--force".to_string()],
+            }),
         },
     ]
 }
@@ -542,6 +571,7 @@ mod tests {
                     action: NativeAction::Block,
                     pattern: "global".to_string(),
                     rewrite: None,
+                    argv_match: None,
                 }],
                 merge_strategy: MergeStrategy::Extend,
             }],
@@ -560,6 +590,7 @@ mod tests {
                     action: NativeAction::Block,
                     pattern: "local".to_string(),
                     rewrite: None,
+                    argv_match: None,
                 }],
                 merge_strategy: MergeStrategy::Extend,
             }],
@@ -592,6 +623,7 @@ mod tests {
                     action: NativeAction::Block,
                     pattern: "global".to_string(),
                     rewrite: None,
+                    argv_match: None,
                 }],
                 merge_strategy: MergeStrategy::Extend,
             }],
@@ -610,6 +642,7 @@ mod tests {
                     action: NativeAction::Block,
                     pattern: "local".to_string(),
                     rewrite: None,
+                    argv_match: None,
                 }],
                 merge_strategy: MergeStrategy::Replace,
             }],
@@ -665,6 +698,7 @@ mod tests {
                     action: NativeAction::Block,
                     pattern: "global".to_string(),
                     rewrite: None,
+                    argv_match: None,
                 }],
                 merge_strategy: MergeStrategy::Extend,
             }],
@@ -683,6 +717,7 @@ mod tests {
                     action: NativeAction::Block,
                     pattern: "local".to_string(),
                     rewrite: None,
+                    argv_match: None,
                 }],
                 merge_strategy: MergeStrategy::Prepend,
             }],

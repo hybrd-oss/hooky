@@ -1,4 +1,4 @@
-use crate::hooky::config::{Config, EngineConfig, NativeAction};
+use crate::hooky::config::{ArgvMatch, Config, EngineConfig, NativeAction};
 use crate::hooky::decision::{Decision, DecisionKind};
 use anyhow::{anyhow, bail, Context, Result};
 use regex::Regex;
@@ -7,8 +7,13 @@ use std::ffi::OsStr;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+struct ArgvContext<'a> {
+    bin: &'a str,
+    args: &'a [String],
+}
+
 pub fn evaluate_shell_command(command: &str, config: &Config) -> Result<Decision> {
-    evaluate_command(command, config)
+    evaluate_command(command, None, config)
 }
 
 pub fn evaluate_argv_command(bin: &str, args: &[String], config: &Config) -> Result<Decision> {
@@ -16,14 +21,19 @@ pub fn evaluate_argv_command(bin: &str, args: &[String], config: &Config) -> Res
         .chain(args.iter().cloned())
         .collect::<Vec<String>>()
         .join(" ");
-    evaluate_command(&joined, config)
+    let ctx = ArgvContext { bin, args };
+    evaluate_command(&joined, Some(&ctx), config)
 }
 
-fn evaluate_command(command: &str, config: &Config) -> Result<Decision> {
+fn evaluate_command(
+    command: &str,
+    argv: Option<&ArgvContext>,
+    config: &Config,
+) -> Result<Decision> {
     let mut pending_confirm = false;
 
     for engine in &config.engines {
-        let Some(decision) = run_engine(engine, command)? else {
+        let Some(decision) = run_engine(engine, command, argv)? else {
             continue;
         };
 
@@ -56,7 +66,11 @@ fn evaluate_command(command: &str, config: &Config) -> Result<Decision> {
     Ok(Decision::allow("no rules matched", "combiner"))
 }
 
-fn run_engine(engine: &EngineConfig, command: &str) -> Result<Option<Decision>> {
+fn run_engine(
+    engine: &EngineConfig,
+    command: &str,
+    argv: Option<&ArgvContext>,
+) -> Result<Option<Decision>> {
     match engine {
         EngineConfig::ClaudeHooks { enabled, hooks_dir } => {
             if !enabled {
@@ -81,7 +95,7 @@ fn run_engine(engine: &EngineConfig, command: &str) -> Result<Option<Decision>> 
             if !enabled {
                 return Ok(None);
             }
-            Ok(run_native_engine(command, rules.as_slice())?)
+            Ok(run_native_engine(command, rules.as_slice(), argv)?)
         }
         EngineConfig::LocalHooks { enabled, .. } => {
             if !enabled {
@@ -318,15 +332,46 @@ fn combined_text(stdout: &[u8], stderr: &[u8]) -> Option<String> {
     None
 }
 
+fn matches_argv(m: &ArgvMatch, ctx: &ArgvContext) -> bool {
+    // Check binary name
+    if !m.bin.is_empty() {
+        let actual = ctx.bin.rsplit('/').next().unwrap_or(ctx.bin);
+        if actual != m.bin {
+            return false;
+        }
+    }
+    // Check subcommand present in args
+    if !m.subcommands.is_empty()
+        && !m
+            .subcommands
+            .iter()
+            .any(|sc| ctx.args.iter().any(|a| a == sc))
+    {
+        return false;
+    }
+    // Check at least one blocked flag present in args
+    if m.flags.is_empty() {
+        return false;
+    }
+    m.flags.iter().any(|f| ctx.args.iter().any(|a| a == f))
+}
+
 fn run_native_engine(
     command: &str,
     rules: &[crate::hooky::config::NativeRule],
+    argv: Option<&ArgvContext>,
 ) -> Result<Option<Decision>> {
     for rule in rules {
-        let regex = Regex::new(&rule.pattern)
-            .with_context(|| format!("invalid regex for native rule {}", rule.id))?;
+        // When both argv context and argv_match are available, use structural matching
+        let matched = if let (Some(m), Some(ctx)) = (&rule.argv_match, argv) {
+            matches_argv(m, ctx)
+        } else {
+            let regex = Regex::new(&rule.pattern)
+                .with_context(|| format!("invalid regex for native rule {}", rule.id))?;
+            regex.is_match(command)
+        };
 
-        if !regex.is_match(command) {
+        if !matched {
             continue;
         }
 
@@ -406,6 +451,7 @@ mod tests {
             action: NativeAction::Block,
             pattern: "--no-verify".to_string(),
             rewrite: None,
+            argv_match: None,
         }]);
 
         let decision = evaluate_shell_command("git commit --no-verify -m test", &config)
@@ -422,6 +468,7 @@ mod tests {
             action: NativeAction::Rewrite,
             pattern: "--force".to_string(),
             rewrite: Some("git push --force-with-lease".to_string()),
+            argv_match: None,
         }]);
 
         let decision = evaluate_shell_command("git push origin main --force", &config)
@@ -446,6 +493,7 @@ mod tests {
                         action: NativeAction::Rewrite,
                         pattern: "--force".to_string(),
                         rewrite: Some("git push --force-with-lease".to_string()),
+                        argv_match: None,
                     }],
                     merge_strategy: crate::hooky::config::MergeStrategy::default(),
                 },
@@ -456,6 +504,7 @@ mod tests {
                         action: NativeAction::Block,
                         pattern: "--force".to_string(),
                         rewrite: None,
+                        argv_match: None,
                     }],
                     merge_strategy: crate::hooky::config::MergeStrategy::default(),
                 },
@@ -480,6 +529,7 @@ mod tests {
             action: NativeAction::Confirm,
             pattern: "rm -rf".to_string(),
             rewrite: None,
+            argv_match: None,
         }]);
 
         let decision =
@@ -502,6 +552,90 @@ mod tests {
     fn dcg_plain_text_allow_uses_exit_status() {
         let decision = parse_dcg_decision("echo hi", true, b"", b"");
         assert_eq!(decision.kind, DecisionKind::Allow);
+    }
+
+    #[test]
+    fn argv_blocks_git_commit_no_verify() {
+        let config = Config::default();
+        let decision = evaluate_argv_command(
+            "git",
+            &[
+                "commit".into(),
+                "--no-verify".into(),
+                "-m".into(),
+                "test".into(),
+            ],
+            &config,
+        )
+        .expect("evaluation should succeed");
+        assert_eq!(decision.kind, DecisionKind::Block);
+    }
+
+    #[test]
+    fn argv_blocks_git_commit_short_n() {
+        let config = Config::default();
+        let decision = evaluate_argv_command(
+            "git",
+            &["commit".into(), "-n".into(), "-m".into(), "test".into()],
+            &config,
+        )
+        .expect("evaluation should succeed");
+        assert_eq!(decision.kind, DecisionKind::Block);
+    }
+
+    #[test]
+    fn argv_allows_bash_precommit_with_n_test() {
+        let config = Config::default();
+        let decision = evaluate_argv_command(
+            "bash",
+            &["-c".into(), "[ -n \"$CI\" ] && pre-commit run".into()],
+            &config,
+        )
+        .expect("evaluation should succeed");
+        assert_eq!(decision.kind, DecisionKind::Allow);
+    }
+
+    #[test]
+    fn argv_blocks_git_push_force() {
+        let config = Config::default();
+        let decision = evaluate_argv_command(
+            "git",
+            &[
+                "push".into(),
+                "origin".into(),
+                "main".into(),
+                "--force".into(),
+            ],
+            &config,
+        )
+        .expect("evaluation should succeed");
+        assert_eq!(decision.kind, DecisionKind::Block);
+    }
+
+    #[test]
+    fn argv_allows_git_push_no_force() {
+        let config = Config::default();
+        let decision = evaluate_argv_command(
+            "git",
+            &["push".into(), "origin".into(), "main".into()],
+            &config,
+        )
+        .expect("evaluation should succeed");
+        assert_eq!(decision.kind, DecisionKind::Allow);
+    }
+
+    #[test]
+    fn argv_custom_regex_rule_falls_back() {
+        let config = config_with_native_rules(vec![NativeRule {
+            id: "custom-block".to_string(),
+            action: NativeAction::Block,
+            pattern: r"dangerous-cmd".to_string(),
+            rewrite: None,
+            argv_match: None,
+        }]);
+        let decision = evaluate_argv_command("dangerous-cmd", &["--flag".into()], &config)
+            .expect("evaluation should succeed");
+        assert_eq!(decision.kind, DecisionKind::Block);
     }
 
     #[test]

@@ -281,6 +281,41 @@ fn setup_dcg_writes_enabled_dcg_engine_config() {
 }
 
 #[test]
+fn check_argv_allows_bash_precommit_with_n_test() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let config_path = temp.path().join("hooky.yml");
+    let audit_path = temp.path().join("audit.jsonl");
+
+    // Use default config (which includes the default native rules with argv_match)
+    let config = format!(
+        "version: 1
+mode: enforce
+audit:
+  log_path: \"{}\"
+",
+        audit_path.display()
+    );
+    fs::write(&config_path, config).expect("failed to write test config");
+
+    // This is the false-positive case: bash running a pre-commit hook
+    // The -n in [ -n "$CI" ] should NOT trigger the block-no-verify rule
+    Command::new(env!("CARGO_BIN_EXE_hooky"))
+        .args([
+            "check-argv",
+            "--config",
+            config_path.to_str().expect("path should be valid utf-8"),
+            "--bin",
+            "bash",
+            "--",
+            "-c",
+            "[ -n \"$CI\" ] && pre-commit run",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"kind\": \"allow\""));
+}
+
+#[test]
 fn import_dcg_points_hooky_to_existing_dcg_config() {
     let temp = tempfile::tempdir().expect("tempdir should be created");
     let dcg_path = temp.path().join(".dcg.toml");

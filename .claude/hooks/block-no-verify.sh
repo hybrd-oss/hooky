@@ -5,8 +5,8 @@
 input=$(cat)
 command=$(echo "$input" | jq -r '.tool_input.command // empty')
 
-# Check for --no-verify, --no-gpg-sign, or -n flags
-if echo "$command" | grep -qE '(--no-verify|--no-gpg-sign|-n\b.*commit)'; then
+# Check for --no-verify, --no-gpg-sign, or git commit -n flags
+if echo "$command" | grep -qE '(--no-verify|--no-gpg-sign|\bgit\b.*\bcommit\b.*\s-n\b|\bgit\b.*\s-n\b.*\bcommit\b)'; then
   echo "BLOCKED: Commands with --no-verify or --no-gpg-sign are not allowed."
   echo "Pre-commit hooks must always run."
   exit 1
