@@ -163,7 +163,14 @@ impl Config {
             )
         })?;
 
-        Ok(parsed.with_defaults_applied())
+        let base_dir = effective_path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+
+        Ok(parsed
+            .with_defaults_applied()
+            .resolve_relative_paths(base_dir))
     }
 
     #[must_use]
@@ -226,6 +233,38 @@ impl Config {
             (None, Some(l)) => l,
             (Some(g), Some(l)) => merge_configs(&g, l),
         }
+    }
+
+    fn resolve_relative_paths(mut self, base_dir: &Path) -> Self {
+        self.audit.log_path = resolve_path(&self.audit.log_path, base_dir);
+
+        for engine in &mut self.engines {
+            match engine {
+                EngineConfig::ClaudeHooks { hooks_dir, .. } => {
+                    *hooks_dir = resolve_path(hooks_dir, base_dir);
+                }
+                EngineConfig::Dcg { config, .. } => {
+                    if let Some(path) = config.as_mut() {
+                        *path = resolve_path(path, base_dir);
+                    }
+                }
+                EngineConfig::LocalHooks {
+                    pre_command,
+                    post_command,
+                    ..
+                } => {
+                    if let Some(path) = pre_command.as_mut() {
+                        *path = resolve_path(path, base_dir);
+                    }
+                    if let Some(path) = post_command.as_mut() {
+                        *path = resolve_path(path, base_dir);
+                    }
+                }
+                EngineConfig::Native { .. } => {}
+            }
+        }
+
+        self
     }
 }
 
@@ -358,6 +397,14 @@ fn merge_same_engine(global: &EngineConfig, local: &EngineConfig) -> EngineConfi
     }
 }
 
+fn resolve_path(path: &Path, base_dir: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base_dir.join(path)
+    }
+}
+
 fn default_version() -> u32 {
     1
 }
@@ -442,6 +489,7 @@ fn default_native_rules() -> Vec<NativeRule> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn default_config_has_expected_engine_order() {
@@ -711,5 +759,105 @@ mod tests {
         let config = Config::default();
         assert_eq!(config.shims.commands.len(), 6);
         assert!(config.shims.commands.contains(&"git".to_string()));
+    }
+
+    #[test]
+    fn load_resolves_default_relative_paths_against_config_directory() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let config_dir = temp.path().join("nested");
+        fs::create_dir_all(&config_dir).expect("config dir should exist");
+        let config_path = config_dir.join("hooky.yml");
+        fs::write(&config_path, "version: 1\n").expect("config should be written");
+
+        let config = Config::load(Some(&config_path)).expect("config should load");
+
+        assert_eq!(config.audit.log_path, config_dir.join(".hooky-log.jsonl"));
+        let claude_hooks = config
+            .engines
+            .iter()
+            .find_map(|engine| match engine {
+                EngineConfig::ClaudeHooks { hooks_dir, .. } => Some(hooks_dir),
+                _ => None,
+            })
+            .expect("default claude hooks engine should exist");
+        assert_eq!(claude_hooks, &config_dir.join(".claude/hooks"));
+    }
+
+    #[test]
+    fn load_resolves_explicit_relative_engine_paths_against_config_directory() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let config_dir = temp.path().join("workspace");
+        fs::create_dir_all(&config_dir).expect("config dir should exist");
+        let config_path = config_dir.join(".hooky.yml");
+
+        let config_yaml = r"
+version: 1
+engines:
+  - type: claude_hooks
+    enabled: true
+    hooks_dir: custom/hooks
+  - type: dcg
+    enabled: true
+    cmd: dcg
+    config: security/dcg.toml
+  - type: native
+    enabled: true
+    rules:
+      - id: block
+        action: block
+        pattern: dangerous
+  - type: local_hooks
+    enabled: true
+    pre_command: scripts/pre.sh
+    post_command: scripts/post.sh
+audit:
+  log_path: logs/hooky.jsonl
+";
+        fs::write(&config_path, config_yaml).expect("config should be written");
+
+        let config = Config::load(Some(&config_path)).expect("config should load");
+
+        let claude_hooks = config
+            .engines
+            .iter()
+            .find_map(|engine| match engine {
+                EngineConfig::ClaudeHooks { hooks_dir, .. } => Some(hooks_dir),
+                _ => None,
+            })
+            .expect("claude hooks should exist");
+        assert_eq!(claude_hooks, &config_dir.join("custom/hooks"));
+
+        let dcg_config = config
+            .engines
+            .iter()
+            .find_map(|engine| match engine {
+                EngineConfig::Dcg { config, .. } => config.as_ref(),
+                _ => None,
+            })
+            .expect("dcg config should exist");
+        assert_eq!(dcg_config, &config_dir.join("security/dcg.toml"));
+
+        let (pre, post) = config
+            .engines
+            .iter()
+            .find_map(|engine| match engine {
+                EngineConfig::LocalHooks {
+                    pre_command,
+                    post_command,
+                    ..
+                } => Some((pre_command.as_ref(), post_command.as_ref())),
+                _ => None,
+            })
+            .expect("local hooks should exist");
+        assert_eq!(
+            pre.expect("pre command should exist"),
+            &config_dir.join("scripts/pre.sh")
+        );
+        assert_eq!(
+            post.expect("post command should exist"),
+            &config_dir.join("scripts/post.sh")
+        );
+
+        assert_eq!(config.audit.log_path, config_dir.join("logs/hooky.jsonl"));
     }
 }
