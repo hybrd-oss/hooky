@@ -40,7 +40,7 @@ See `docs/specs/00-overview.md` for the spec index and current implementation ov
 - Deny-first policy (`allow`, `block`, `confirm`)
 - Rewrite actions are currently denied by combiner behavior (deny-only mode)
 - Claude hook compatibility via `.claude/hooks/block-no-verify.sh`
-- JSONL audit logging to `.hooky-log.jsonl` with best-effort secret redaction
+- JSONL audit logging to `.hooky/.hooky-log.jsonl` with best-effort secret redaction
 - Default shim coverage is `git`, `rm`, `mv`, `curl`, `bash`, and `sh`; this can be extended to any command by adding more shim targets
 
 ## Quickstart
@@ -57,7 +57,7 @@ hooky run -- claude --help
 hooky run -- bash -lc "git status"
 ```
 
-`hooky doctor` and `hooky install-shims` will best-effort add `.hooky/` and `.hooky-log.jsonl` to `.gitignore` if missing.
+`hooky doctor` and `hooky install-shims` will best-effort add `.hooky/` to `.gitignore` if missing.
 
 ## Sample rejected command output
 
@@ -136,7 +136,7 @@ Example: rewrite rule rejected in deny-only mode (`--force`).
    - Any `block` stops the command
    - `confirm` returns exit code `10`
    - `rewrite` is currently treated as `block` (deny-only mode)
-6. Every command check is appended to `.hooky-log.jsonl`.
+6. Every command check is appended to `.hooky/.hooky-log.jsonl`.
 
 `--quiet` behavior:
 - `allow`: no decision output

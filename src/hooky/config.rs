@@ -422,7 +422,7 @@ fn default_claude_hooks_dir() -> PathBuf {
 }
 
 fn default_audit_path() -> PathBuf {
-    PathBuf::from(".hooky-log.jsonl")
+    PathBuf::from(".hooky/.hooky-log.jsonl")
 }
 
 fn default_shim_commands() -> Vec<String> {
@@ -771,7 +771,10 @@ mod tests {
 
         let config = Config::load(Some(&config_path)).expect("config should load");
 
-        assert_eq!(config.audit.log_path, config_dir.join(".hooky-log.jsonl"));
+        assert_eq!(
+            config.audit.log_path,
+            config_dir.join(".hooky/.hooky-log.jsonl")
+        );
         let claude_hooks = config
             .engines
             .iter()

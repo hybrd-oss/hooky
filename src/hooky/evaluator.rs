@@ -394,7 +394,7 @@ mod tests {
             }],
             combine: CombineConfig::default(),
             audit: AuditConfig {
-                log_path: PathBuf::from(".hooky-log.jsonl"),
+                log_path: PathBuf::from(".hooky/.hooky-log.jsonl"),
             },
         }
     }
@@ -462,7 +462,7 @@ mod tests {
             ],
             combine: CombineConfig::default(),
             audit: AuditConfig {
-                log_path: PathBuf::from(".hooky-log.jsonl"),
+                log_path: PathBuf::from(".hooky/.hooky-log.jsonl"),
             },
         };
 

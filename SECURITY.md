@@ -49,4 +49,4 @@ Out of scope / known limits:
 - Run `cargo audit`
 - Run `cargo deny check advisories`
 - Run `pre-commit run --all-files`
-- Review `.hooky-log.jsonl` handling and ensure sensitive data redaction remains enabled
+- Review `.hooky/.hooky-log.jsonl` handling and ensure sensitive data redaction remains enabled

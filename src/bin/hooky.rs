@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 const DEFAULT_SHIMS_DIR: &str = ".hooky/shims";
-const REQUIRED_GITIGNORE_PATTERNS: [&str; 2] = [".hooky/", ".hooky-log.jsonl"];
+const REQUIRED_GITIGNORE_PATTERNS: [&str; 1] = [".hooky/"];
 
 #[derive(Parser)]
 #[command(name = "hooky")]
@@ -650,9 +650,7 @@ fn set_exit_code_from_decision(decision: &Decision) {
 fn maybe_sync_gitignore_patterns() {
     match ensure_gitignore_entries(Path::new(".gitignore"), &REQUIRED_GITIGNORE_PATTERNS) {
         Ok(true) => {
-            eprintln!(
-                "hooky: updated .gitignore with runtime artifacts (.hooky/, .hooky-log.jsonl)"
-            );
+            eprintln!("hooky: updated .gitignore with runtime artifacts (.hooky/)");
         }
         Ok(false) => {}
         Err(err) => {
@@ -949,15 +947,13 @@ mod tests {
 
         let content = fs::read_to_string(gitignore_path).expect("gitignore should be readable");
         assert!(content.contains(".hooky/\n"));
-        assert!(content.contains(".hooky-log.jsonl\n"));
     }
 
     #[test]
     fn ensure_gitignore_entries_is_idempotent_for_slash_prefixed_patterns() {
         let temp = tempfile::tempdir().expect("tempdir should be created");
         let gitignore_path = temp.path().join(".gitignore");
-        fs::write(&gitignore_path, "/target\n/.hooky/\n/.hooky-log.jsonl\n")
-            .expect("gitignore should be created");
+        fs::write(&gitignore_path, "/target\n/.hooky/\n").expect("gitignore should be created");
 
         let changed = ensure_gitignore_entries(&gitignore_path, &REQUIRED_GITIGNORE_PATTERNS)
             .expect("gitignore update should succeed");
