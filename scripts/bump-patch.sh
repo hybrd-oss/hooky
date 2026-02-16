@@ -11,6 +11,11 @@ if ! command -v cargo >/dev/null 2>&1; then
   exit 1
 fi
 
+echo "Running pre-bump quality gates..."
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets --all-features
+
 current_version="$(sed -nE 's/^version = "([0-9]+)\.([0-9]+)\.([0-9]+)"/\1.\2.\3/p' Cargo.toml | head -n1)"
 if [[ -z "${current_version}" ]]; then
   echo "error: could not parse package version from Cargo.toml" >&2

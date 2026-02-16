@@ -225,6 +225,31 @@ fn run_is_idempotent_after_install_shims() {
 }
 
 #[test]
+fn run_with_relative_shims_dir_exports_absolute_path_prefix() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let config_path = temp.path().join("hooky.yml");
+    let audit_path = temp.path().join("audit.jsonl");
+    write_native_config(&config_path, &audit_path);
+
+    Command::new(env!("CARGO_BIN_EXE_hooky"))
+        .current_dir(temp.path())
+        .args([
+            "run",
+            "--config",
+            config_path.to_str().expect("path should be valid utf-8"),
+            "--shims-dir",
+            "shims",
+            "--",
+            "bash",
+            "-lc",
+            "first=\"${PATH%%:*}\"; [[ \"$first\" = /* ]] && echo absolute-prefix",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("absolute-prefix"));
+}
+
+#[test]
 fn setup_dcg_writes_enabled_dcg_engine_config() {
     let temp = tempfile::tempdir().expect("tempdir should be created");
     let config_path = temp.path().join("hooky.yml");

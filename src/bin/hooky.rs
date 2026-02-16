@@ -249,6 +249,9 @@ fn run_program(
         &config.shims.commands,
     )?;
 
+    let shims_path = canonical_or_absolute_path(&shims_path)
+        .with_context(|| format!("failed to resolve shims path {}", shims_path.display()))?;
+
     let existing_path = std::env::var("PATH").unwrap_or_default();
     let combined_path = if existing_path.is_empty() {
         shims_path.display().to_string()
@@ -280,6 +283,19 @@ fn program_exists(program: &str) -> bool {
     }
 
     evaluator::command_exists(program)
+}
+
+fn canonical_or_absolute_path(path: &Path) -> Result<PathBuf> {
+    if let Ok(canonical) = fs::canonicalize(path) {
+        return Ok(canonical);
+    }
+
+    if path.is_absolute() {
+        return Ok(path.to_path_buf());
+    }
+
+    let cwd = env::current_dir().context("failed to determine current directory")?;
+    Ok(cwd.join(path))
 }
 
 fn install_shims_command(dir: Option<&Path>, force: bool) -> Result<()> {
