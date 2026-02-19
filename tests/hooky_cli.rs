@@ -343,3 +343,32 @@ fn import_dcg_points_hooky_to_existing_dcg_config() {
     assert!(written.contains("enabled: true"));
     assert!(written.contains(&format!("config: {}", dcg_path.display())));
 }
+
+#[test]
+fn check_argv_from_subdirectory_writes_audit_to_repo_hooky_dir() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let root = temp.path().join("repo");
+    let frontend = root.join("frontend");
+    let hooky_dir = root.join(".hooky");
+    let audit_path = hooky_dir.join(".hooky-log.jsonl");
+
+    fs::create_dir_all(&frontend).expect("frontend dir should exist");
+    fs::create_dir_all(&hooky_dir).expect("hooky dir should exist");
+
+    Command::new(env!("CARGO_BIN_EXE_hooky"))
+        .current_dir(&frontend)
+        .args([
+            "check-argv",
+            "--quiet",
+            "--bin",
+            "bash",
+            "--",
+            "-c",
+            "echo test",
+        ])
+        .assert()
+        .success();
+
+    let audit = fs::read_to_string(audit_path).expect("audit file should exist");
+    assert!(audit.contains("\"event\":\"command_check\""));
+}

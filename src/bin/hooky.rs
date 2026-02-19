@@ -503,9 +503,52 @@ fn is_trusted_bin_path(path: &Path) -> bool {
 }
 
 fn load_effective_config(config_path: Option<&Path>) -> Result<Config> {
-    match config_path {
+    let mut config = match config_path {
         Some(path) => Config::load(Some(path)),
         None => Config::load_merged(None),
+    }?;
+
+    config.audit.log_path = resolve_audit_log_path(&config.audit.log_path)?;
+    Ok(config)
+}
+
+fn resolve_audit_log_path(path: &Path) -> Result<PathBuf> {
+    if path.is_absolute() {
+        return Ok(path.to_path_buf());
+    }
+
+    let cwd = env::current_dir().context("failed to determine current directory")?;
+    Ok(resolve_audit_log_path_from_start(path, &cwd))
+}
+
+fn resolve_audit_log_path_from_start(path: &Path, start: &Path) -> PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+
+    if let Some(hooky_dir) = find_nearest_hooky_dir(start) {
+        if let Ok(suffix) = path.strip_prefix(".hooky") {
+            return hooky_dir.join(suffix);
+        }
+
+        let hooky_root = hooky_dir.parent().unwrap_or(hooky_dir.as_path());
+        return hooky_root.join(path);
+    }
+
+    path.to_path_buf()
+}
+
+fn find_nearest_hooky_dir(start: &Path) -> Option<PathBuf> {
+    let mut current = start.to_path_buf();
+    loop {
+        let hooky_dir = current.join(".hooky");
+        if hooky_dir.is_dir() {
+            return Some(hooky_dir);
+        }
+
+        if !current.pop() {
+            return None;
+        }
     }
 }
 
@@ -974,5 +1017,20 @@ mod tests {
         let changed = ensure_gitignore_entries(&gitignore_path, &REQUIRED_GITIGNORE_PATTERNS)
             .expect("gitignore update should succeed");
         assert!(!changed);
+    }
+
+    #[test]
+    fn resolve_audit_log_path_anchors_default_path_to_nearest_hooky_dir() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let root = temp.path().join("repo");
+        let nested = root.join("frontend/src");
+        let hooky_dir = root.join(".hooky");
+        fs::create_dir_all(&nested).expect("nested dir should exist");
+        fs::create_dir_all(&hooky_dir).expect("hooky dir should exist");
+
+        let resolved =
+            resolve_audit_log_path_from_start(Path::new(".hooky/.hooky-log.jsonl"), &nested);
+
+        assert_eq!(resolved, hooky_dir.join(".hooky-log.jsonl"));
     }
 }
