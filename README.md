@@ -48,16 +48,56 @@ See `docs/specs/00-overview.md` for the spec index and current implementation ov
 ```bash
 cargo install --path . --force
 
+# One-time global bootstrap (recommended)
+hooky init --global
+
+# Verify DCG is enabled
 hooky doctor
-hooky check-shell --cmd "git commit --no-verify -m test"
-hooky install-shims
-hooky setup dcg
+
+# Sanity check: this should be blocked by DCG
+hooky check-shell --cmd "rm -rf fake-dir"
+
+# Run tools under hooky
 hooky run -- codex --help
 hooky run -- claude --help
-hooky run -- bash -lc "git status"
 ```
 
 `hooky doctor` and `hooky install-shims` will best-effort add `.hooky/` to `.gitignore` if missing.
+
+## Agent Setup Examples
+
+### Codex
+
+```bash
+# In your repo (project-local config)
+hooky init
+hooky run -- codex
+```
+
+Codex commands will execute through Hooky shims and policy engines.
+
+### Claude Code
+
+```bash
+# In your repo (project-local config)
+hooky init
+hooky run -- claude
+```
+
+Existing Claude-compatible hook scripts (for example `.claude/hooks/block-no-verify.sh`) are used when present.
+
+### Global setup + per-repo override
+
+```bash
+# Global defaults for all repos
+hooky init --global
+
+# Optional: customize one repo
+cd /path/to/repo
+hooky init
+```
+
+When both exist, repo `.hooky.yml` overrides matching engine settings from `~/.hooky/config.yml`.
 
 ## Sample rejected command output
 
@@ -148,6 +188,78 @@ This is command-level interception via shell and PATH shims (not kernel/syscall 
 
 Default config file: `.hooky.yml` (optional).
 
+### Add your own tools and checks
+
+Hooky is extensible in two layers:
+
+1. Command coverage via shims (which binaries get intercepted)
+2. Policy engines (what gets allowed/blocked)
+
+Add more tool shims in `.hooky.yml`:
+
+```yaml
+shims:
+  commands:
+    - git
+    - rm
+    - docker
+    - kubectl
+    - terraform
+```
+
+After updating shim targets, regenerate shims:
+
+```bash
+hooky install-shims --force
+```
+
+Add custom native checks:
+
+```yaml
+engines:
+  - type: native
+    enabled: true
+    merge_strategy: extend
+    rules:
+      - id: block-kubectl-delete-all
+        action: block
+        pattern: '\bkubectl\s+delete\b.*\s--all(\s|$)'
+        rewrite: null
+
+      - id: block-terraform-destroy-auto-approve
+        action: block
+        pattern: '\bterraform\s+destroy\b.*\s-auto-approve(\s|$)'
+        rewrite: null
+```
+
+Use DCG packs for additional checks:
+
+```bash
+hooky setup dcg --with-pack core.filesystem --with-pack containers.docker
+```
+
+Or import an existing DCG config:
+
+```bash
+hooky import dcg --from .dcg.toml
+```
+
+Validate your custom checks:
+
+```bash
+hooky doctor
+hooky check-shell --cmd "kubectl delete pods --all -n prod"
+hooky check-shell --cmd "terraform destroy -auto-approve"
+```
+
+Then run your agent under Hooky so those checks apply during real execution:
+
+```bash
+hooky run -- codex
+# or
+hooky run -- claude
+```
+
 ### DCG setup (easy path)
 
 Enable DCG integration in one command:
@@ -164,6 +276,12 @@ hooky init
 
 # Global (~/.hooky/config.yml + ~/.hooky/)
 hooky init --global
+```
+
+If you already have a config and only want to enable/update DCG settings in it:
+
+```bash
+hooky setup dcg
 ```
 
 Import an existing DCG config file:
