@@ -281,6 +281,49 @@ fn setup_dcg_writes_enabled_dcg_engine_config() {
 }
 
 #[test]
+fn init_project_bootstraps_config_and_runtime_dir() {
+    let temp = tempfile::tempdir().expect("tempdir should be created");
+    let config_path = temp.path().join(".hooky.yml");
+    let runtime_dir = temp.path().join(".hooky");
+
+    Command::new(env!("CARGO_BIN_EXE_hooky"))
+        .current_dir(temp.path())
+        .arg("init")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"scope\": \"project\""))
+        .stdout(predicate::str::contains("\"dcg_enabled\": true"));
+
+    let written = fs::read_to_string(&config_path).expect("config should be written");
+    assert!(written.contains("type: dcg"));
+    assert!(written.contains("enabled: true"));
+    assert!(written.contains("log_path: .hooky/.hooky-log.jsonl"));
+    assert!(runtime_dir.exists(), "runtime dir should exist");
+}
+
+#[test]
+fn init_global_writes_home_config_with_global_audit_path() {
+    let temp_home = tempfile::tempdir().expect("tempdir should be created");
+    let global_dir = temp_home.path().join(".hooky");
+    let config_path = global_dir.join("config.yml");
+
+    Command::new(env!("CARGO_BIN_EXE_hooky"))
+        .env("HOME", temp_home.path())
+        .arg("init")
+        .arg("--global")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"scope\": \"global\""))
+        .stdout(predicate::str::contains("\"dcg_enabled\": true"));
+
+    let written = fs::read_to_string(&config_path).expect("global config should be written");
+    assert!(written.contains("type: dcg"));
+    assert!(written.contains("enabled: true"));
+    assert!(written.contains("log_path: .hooky-log.jsonl"));
+    assert!(global_dir.exists(), "global .hooky dir should exist");
+}
+
+#[test]
 fn check_argv_allows_bash_precommit_with_n_test() {
     let temp = tempfile::tempdir().expect("tempdir should be created");
     let config_path = temp.path().join("hooky.yml");
@@ -347,6 +390,7 @@ fn import_dcg_points_hooky_to_existing_dcg_config() {
 #[test]
 fn check_argv_from_subdirectory_writes_audit_to_repo_hooky_dir() {
     let temp = tempfile::tempdir().expect("tempdir should be created");
+    let temp_home = tempfile::tempdir().expect("tempdir should be created");
     let root = temp.path().join("repo");
     let frontend = root.join("frontend");
     let hooky_dir = root.join(".hooky");
@@ -356,6 +400,7 @@ fn check_argv_from_subdirectory_writes_audit_to_repo_hooky_dir() {
     fs::create_dir_all(&hooky_dir).expect("hooky dir should exist");
 
     Command::new(env!("CARGO_BIN_EXE_hooky"))
+        .env("HOME", temp_home.path())
         .current_dir(&frontend)
         .args([
             "check-argv",

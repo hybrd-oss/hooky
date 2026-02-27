@@ -29,6 +29,33 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Initialize hooky config and runtime directory
+    Init {
+        /// Initialize global config at ~/.hooky/config.yml
+        #[arg(long)]
+        global: bool,
+
+        /// Path to config file (project mode only)
+        #[arg(long)]
+        config: Option<PathBuf>,
+
+        /// DCG executable command
+        #[arg(long)]
+        cmd: Option<String>,
+
+        /// Path to DCG config file
+        #[arg(long)]
+        dcg_config: Option<PathBuf>,
+
+        /// DCG pack to enable (can be provided multiple times)
+        #[arg(long = "with-pack")]
+        with_packs: Vec<String>,
+
+        /// Enable DCG explain output
+        #[arg(long)]
+        explain: bool,
+    },
+
     /// Run a target program with a guarded shell and command shims
     Run {
         /// Path to .hooky.yml
@@ -172,6 +199,21 @@ fn run() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Init {
+            global,
+            config,
+            cmd,
+            dcg_config,
+            with_packs,
+            explain,
+        } => run_init(
+            global,
+            config.as_deref(),
+            cmd.as_deref(),
+            dcg_config.as_deref(),
+            &with_packs,
+            explain,
+        ),
         Commands::Run {
             config,
             shims_dir,
@@ -275,6 +317,79 @@ fn run_program(
         Some(code) => std::process::exit(code),
         None => std::process::exit(1),
     }
+}
+
+fn run_init(
+    global: bool,
+    config_path: Option<&Path>,
+    dcg_cmd: Option<&str>,
+    dcg_config: Option<&Path>,
+    with_packs: &[String],
+    explain: bool,
+) -> Result<()> {
+    if global && config_path.is_some() {
+        bail!("--config cannot be combined with --global");
+    }
+
+    let (config_path, runtime_dir, audit_log_path, scope) = if global {
+        let home = dirs::home_dir().ok_or_else(|| anyhow!("failed to determine home directory"))?;
+        let hooky_dir = home.join(".hooky");
+        (
+            hooky_dir.join("config.yml"),
+            hooky_dir,
+            PathBuf::from(".hooky-log.jsonl"),
+            "global".to_string(),
+        )
+    } else {
+        let config_path =
+            config_path.map_or_else(|| PathBuf::from(".hooky.yml"), Path::to_path_buf);
+        let base_dir = config_path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+        (
+            config_path,
+            base_dir.join(".hooky"),
+            PathBuf::from(".hooky/.hooky-log.jsonl"),
+            "project".to_string(),
+        )
+    };
+
+    if let Some(parent) = config_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+    }
+    fs::create_dir_all(&runtime_dir)
+        .with_context(|| format!("failed to create {}", runtime_dir.display()))?;
+
+    let mut config = Config::load(Some(&config_path))?;
+    upsert_dcg_engine(
+        &mut config,
+        true,
+        dcg_cmd.unwrap_or("dcg"),
+        dcg_config,
+        with_packs,
+        explain,
+    );
+    config.audit.log_path = audit_log_path;
+    write_config_file(&config_path, &config)?;
+
+    let response = CliResponse::success(InitResponse {
+        scope,
+        config_path,
+        runtime_dir,
+        dcg_enabled: true,
+        dcg_cmd: dcg_cmd.unwrap_or("dcg").to_string(),
+        dcg_config: dcg_config.map(Path::to_path_buf),
+        with_packs: with_packs.to_vec(),
+        explain,
+    });
+    let json =
+        serde_json::to_string_pretty(&response).context("failed to serialize init response")?;
+    println!("{json}");
+    Ok(())
 }
 
 fn program_exists(program: &str) -> bool {
@@ -894,6 +1009,18 @@ struct ImportDcgResponse {
     config_path: PathBuf,
     imported_from: PathBuf,
     dcg_cmd: String,
+}
+
+#[derive(serde::Serialize)]
+struct InitResponse {
+    scope: String,
+    config_path: PathBuf,
+    runtime_dir: PathBuf,
+    dcg_enabled: bool,
+    dcg_cmd: String,
+    dcg_config: Option<PathBuf>,
+    with_packs: Vec<String>,
+    explain: bool,
 }
 
 #[cfg(test)]

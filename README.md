@@ -156,6 +156,16 @@ Enable DCG integration in one command:
 hooky setup dcg
 ```
 
+Bootstrap a complete Hooky config (including DCG + runtime directory):
+
+```bash
+# Project-local (.hooky.yml + ./.hooky/)
+hooky init
+
+# Global (~/.hooky/config.yml + ~/.hooky/)
+hooky init --global
+```
+
 Import an existing DCG config file:
 
 ```bash
