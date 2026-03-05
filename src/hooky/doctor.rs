@@ -3,6 +3,20 @@ use crate::hooky::evaluator::command_exists;
 use anyhow::Result;
 use serde::Serialize;
 
+fn format_size(bytes: u64) -> String {
+    if bytes < 1_024 {
+        format!("{bytes}B")
+    } else if bytes < 1_024 * 1_024 {
+        #[allow(clippy::cast_precision_loss)]
+        let kb = bytes as f64 / 1_024.0;
+        format!("{kb:.1}KB")
+    } else {
+        #[allow(clippy::cast_precision_loss)]
+        let mb = bytes as f64 / (1_024.0 * 1_024.0);
+        format!("{mb:.1}MB")
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct DoctorReport {
     pub ok: bool,
@@ -25,10 +39,12 @@ pub fn run(config: &Config) -> Result<DoctorReport> {
         details: format!("version={}", config.version),
     });
 
+    let log_size = std::fs::metadata(&config.audit.log_path)
+        .map_or_else(|_| "not found".to_string(), |m| format_size(m.len()));
     checks.push(DoctorCheck {
         name: "audit-log-path".to_string(),
         ok: true,
-        details: format!("{}", config.audit.log_path.display()),
+        details: format!("{} ({})", config.audit.log_path.display(), log_size),
     });
 
     for engine in &config.engines {

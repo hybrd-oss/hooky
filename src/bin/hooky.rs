@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{Parser, Subcommand};
-use hooky::hooky::audit::{append_event, AuditEvent};
+use hooky::hooky::audit::{append_event, clean_before_today, AuditEvent};
 use hooky::hooky::config::{Config, EngineConfig};
 use hooky::hooky::decision::{Decision, DecisionKind};
 use hooky::hooky::{doctor, evaluator};
@@ -123,6 +123,13 @@ enum Commands {
         args: Vec<String>,
     },
 
+    /// Delete audit log entries older than today
+    Clean {
+        /// Path to .hooky.yml
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
+
     /// Guided setup helpers
     Setup {
         #[command(subcommand)]
@@ -221,6 +228,7 @@ fn run() -> Result<()> {
         } => run_program(config.as_deref(), shims_dir.as_deref(), &target_and_args),
         Commands::InstallShims { dir, force } => install_shims_command(dir.as_deref(), force),
         Commands::Doctor { config } => run_doctor(config.as_deref()),
+        Commands::Clean { config } => run_clean(config.as_deref()),
         Commands::CheckShell { cmd, config, quiet } => {
             run_check_shell(config.as_deref(), &cmd, quiet)
         }
@@ -711,6 +719,19 @@ fn run_doctor(config_path: Option<&Path>) -> Result<()> {
         std::process::exit(1);
     }
 
+    Ok(())
+}
+
+fn run_clean(config_path: Option<&Path>) -> Result<()> {
+    let config = load_effective_config(config_path)?;
+    let removed = clean_before_today(&config.audit.log_path)?;
+    let response = CliResponse::success(serde_json::json!({
+        "removed": removed,
+        "log_path": config.audit.log_path.display().to_string(),
+    }));
+    let json =
+        serde_json::to_string_pretty(&response).context("failed to serialize clean response")?;
+    println!("{json}");
     Ok(())
 }
 
