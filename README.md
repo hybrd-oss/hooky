@@ -21,17 +21,23 @@ Works with **Codex**, **Claude Code**, or anything that runs shell commands.
 ## Setup
 
 ```bash
+# 1. Install DCG (the core rule engine)
+curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/destructive_command_guard/main/install.sh?$(date +%s)" | bash -s -- --easy-mode
+
+# 2. Install Hooky
 cargo install --path . --force
 
-# Create config (global recommended — applies to all repos)
+# 3. Create config (global recommended — applies to all repos)
 hooky init --global
 
-# Run your agent through Hooky — shims install automatically on first run
+# 4. Run your agent through Hooky — shims install automatically on first run
 hooky run -- codex
 hooky run -- claude
 ```
 
 That's it. Hooky intercepts commands at the shell level and enforces rules before anything runs.
+
+> **Verify your setup** — `hooky doctor` checks that DCG is installed, shims are active, and config is valid.
 
 ---
 

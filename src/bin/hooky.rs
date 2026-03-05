@@ -376,19 +376,32 @@ fn run_init(
     config.audit.log_path = audit_log_path;
     write_config_file(&config_path, &config)?;
 
+    let resolved_dcg_cmd = dcg_cmd.unwrap_or("dcg");
+    let dcg_found = program_exists(resolved_dcg_cmd);
+
     let response = CliResponse::success(InitResponse {
         scope,
         config_path,
         runtime_dir,
         dcg_enabled: true,
-        dcg_cmd: dcg_cmd.unwrap_or("dcg").to_string(),
+        dcg_cmd: resolved_dcg_cmd.to_string(),
         dcg_config: dcg_config.map(Path::to_path_buf),
         with_packs: with_packs.to_vec(),
         explain,
+        dcg_found,
     });
     let json =
         serde_json::to_string_pretty(&response).context("failed to serialize init response")?;
     println!("{json}");
+
+    if !dcg_found {
+        eprintln!(
+            "\nhooky: DCG engine is enabled but '{resolved_dcg_cmd}' was not found.\n\
+             Install DCG to activate the full rule set:\n\n  \
+             curl -fsSL \"https://raw.githubusercontent.com/Dicklesworthstone/destructive_command_guard/main/install.sh?$(date +%s)\" | bash -s -- --easy-mode\n"
+        );
+    }
+
     Ok(())
 }
 
@@ -1021,6 +1034,7 @@ struct InitResponse {
     dcg_config: Option<PathBuf>,
     with_packs: Vec<String>,
     explain: bool,
+    dcg_found: bool,
 }
 
 #[cfg(test)]

@@ -62,7 +62,7 @@ pub fn run(config: &Config) -> Result<DoctorReport> {
                         enabled,
                         cmd,
                         if *enabled && !ok {
-                            " (command not found)"
+                            " (command not found — install DCG: curl -fsSL \"https://raw.githubusercontent.com/Dicklesworthstone/destructive_command_guard/main/install.sh?$(date +%s)\" | bash -s -- --easy-mode)"
                         } else {
                             ""
                         }
