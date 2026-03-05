@@ -3,7 +3,7 @@
 
   # hooky
 
-  **A configurable command firewall for AI agents and shells.**
+  **A command firewall for AI agents.**
 
   Brought to you by the [HYBRD](https://www.hybrd.com) engineering team.
 
@@ -12,90 +12,81 @@
 
 ---
 
-Hooky intercepts shell commands before they run and enforces a configurable policy — across every tool in your stack, uniformly.
+AI agents in yolo mode are fast — but they'll happily run `git commit --no-verify`, `git push --force`, or `rm -rf` without thinking twice. Hooky wraps any agent in a configurable policy layer that intercepts commands before they execute, enforces your rules, and logs every decision.
 
-- Block dangerous flags (`--no-verify`, `--force`, `--auto-approve`, `rm -rf`)
-- Apply rules to any tool: Codex, Claude Code, CI scripts, or bare shell
-- Audit every decision in a JSONL log with automatic secret redaction
-- Extend coverage to any command via lightweight PATH shims
-
-Instead of waiting for every AI agent to implement its own safety checks, wrap it in `hooky run` and get consistent enforcement everywhere.
+Works with **Codex**, **Claude Code**, or anything that runs shell commands.
 
 ---
 
-## Quickstart
+## Setup
 
 ```bash
 cargo install --path . --force
 
-# Bootstrap config + shims
+# Create config (global recommended — applies to all repos)
 hooky init --global
 
-# Verify setup
-hooky doctor
-
-# Test a blocked command
-hooky check-shell --cmd "rm -rf fake-dir"
-
-# Run any agent under Hooky
-hooky run -- codex --help
-hooky run -- claude --help
+# Run your agent through Hooky — shims install automatically on first run
+hooky run -- codex
+hooky run -- claude
 ```
 
-`hooky doctor` and `hooky install-shims` will add `.hooky/` to `.gitignore` if missing.
+That's it. Hooky intercepts commands at the shell level and enforces rules before anything runs.
 
 ---
 
-## How It Works
+## What's blocked out of the box
 
-`hooky run -- <program>` starts your program with `.hooky/shims` prepended to `PATH`. Every shimmed command (`git`, `rm`, `mv`, `curl`, `bash`, `sh` by default) runs through Hooky's policy pipeline before the real binary executes.
+Hooky ships with three default rules:
 
-Policy is evaluated across multiple engines with **deny-first** semantics — any block wins:
+| Rule | What it blocks |
+|------|----------------|
+| `block-no-verify` | `git commit --no-verify`, `--no-gpg-sign`, `-n` — pre-commit hooks must always run |
+| `block-force-push` | `git push --force` — use `--force-with-lease` instead |
+| `block-skip-env` | `SKIP=...` env prefix — bypassing hook runners |
 
-| Decision | Behavior |
-|----------|----------|
-| `allow` | Command runs normally, no output |
-| `block` | Execution stops, reason printed to stderr, non-zero exit |
-| `confirm` | Exits with code `10` |
-| `rewrite` | Currently treated as `block` (deny-only mode) |
-
-Every decision is appended to `.hooky/.hooky-log.jsonl`.
-
-**Example — blocked command:**
+When a command is blocked, the agent sees a clear error:
 
 ```text
 hooky Block: BLOCKED: Commands with --no-verify or --no-gpg-sign are not allowed.
-Pre-commit hooks must always run. [rule: block-no-verify] [engine: claude_hooks]
+Pre-commit hooks must always run. [rule: block-no-verify] [engine: native]
 ```
 
-Audit log entry:
-
-```json
-{
-  "data": {
-    "command": "git commit --no-verify -m test",
-    "decision": {
-      "kind": "block",
-      "reason": "blocked by native rule block-no-verify",
-      "rule_id": "block-no-verify",
-      "engine": "native"
-    }
-  },
-  "timestamp": "2026-02-12T19:40:02.314475Z"
-}
-```
-
-See [docs/how-it-works.md](docs/how-it-works.md) for a detailed breakdown of the interception and evaluation pipeline.
+Every decision — allowed or blocked — is appended to `.hooky/.hooky-log.jsonl` with the command, rule, engine, and timestamp.
 
 ---
 
-## Configuration
+## Adding your own rules
 
-Config lives in `.hooky.yml` (project-local) or `~/.hooky/config.yml` (global). When both exist, the project config overrides matching engine settings from global.
+Edit `.hooky.yml` (project) or `~/.hooky/config.yml` (global):
 
-### Shims — which commands get intercepted
+```yaml
+engines:
+  - type: native
+    enabled: true
+    merge_strategy: extend   # adds to built-in rules
+    rules:
+      - id: block-kubectl-delete-all
+        action: block
+        pattern: '\bkubectl\s+delete\b.*\s--all(\s|$)'
 
-Add any binary to the shim list and regenerate:
+      - id: block-terraform-destroy
+        action: block
+        pattern: '\bterraform\s+destroy\b.*\s-auto-approve(\s|$)'
+```
+
+Test a rule immediately:
+
+```bash
+hooky check-shell --cmd "kubectl delete pods --all -n prod"
+# hooky Block: BLOCKED ...
+```
+
+---
+
+## Extending command coverage
+
+By default, Hooky intercepts `git`, `rm`, `mv`, `curl`, `bash`, and `sh`. Add any binary:
 
 ```yaml
 shims:
@@ -111,50 +102,34 @@ shims:
 hooky install-shims --force
 ```
 
-### Native rules — custom block patterns
+---
 
-```yaml
-engines:
-  - type: native
-    enabled: true
-    merge_strategy: extend
-    rules:
-      - id: block-kubectl-delete-all
-        action: block
-        pattern: '\bkubectl\s+delete\b.*\s--all(\s|$)'
-
-      - id: block-terraform-destroy-auto-approve
-        action: block
-        pattern: '\bterraform\s+destroy\b.*\s-auto-approve(\s|$)'
-```
-
-### DCG integration
-
-[DCG](https://github.com/dicklesworthstone/destructive_command_guard) packs add an additional rule layer:
+## Verify your setup
 
 ```bash
-hooky setup dcg
-hooky setup dcg --with-pack core.filesystem --with-pack containers.docker
-hooky import dcg --from .dcg.toml
+hooky doctor
 ```
 
-### Claude Code hook compatibility
-
-Existing `.claude/hooks/` scripts (e.g. `block-no-verify.sh`) are picked up automatically — no migration needed.
-
-See [docs/configuration.md](docs/configuration.md) for the full configuration reference.
+Checks that shims are installed, config is valid, and `.hooky/` is in `.gitignore`.
 
 ---
 
-## Global vs. Project Config
+## Global vs. project config
 
 ```bash
-# Set global defaults for all repos
-hooky init --global
-
-# Add or override settings for one repo
-cd /path/to/repo
-hooky init
+hooky init --global   # ~/.hooky/config.yml — defaults for all repos
+hooky init            # .hooky.yml — overrides for this repo
 ```
 
-Global config applies everywhere. Project `.hooky.yml` takes precedence for that repo.
+When both exist, the project config overrides matching engine settings from global.
+
+---
+
+## Claude Code hook compatibility
+
+If you have `.claude/hooks/` scripts (e.g. from [DCG](https://github.com/dicklesworthstone/destructive_command_guard)), Hooky picks them up automatically — no migration needed. The `claude_hooks` engine is enabled by default.
+
+---
+
+For deeper configuration options (DCG packs, local hooks, audit settings) see [docs/configuration.md](docs/configuration.md).
+For how interception and policy evaluation work under the hood, see [docs/how-it-works.md](docs/how-it-works.md).
