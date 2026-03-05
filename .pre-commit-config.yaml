@@ -17,11 +17,11 @@ repos:
   - repo: local
     hooks:
       - id: trufflehog-manual
-        name: trufflehog (manual)
-        entry: bash -lc 'command -v trufflehog >/dev/null 2>&1 && trufflehog git file://. --since-commit HEAD --results=verified --fail --trust-local-git-config || { echo "trufflehog not installed; skipping manual hook"; exit 0; }'
+        name: trufflehog
+        entry: bash -lc 'command -v trufflehog >/dev/null 2>&1 || { echo "trufflehog is required but not installed. Install from https://github.com/trufflesecurity/trufflehog"; exit 1; }; trufflehog git file://. --since-commit HEAD --results=verified --fail --trust-local-git-config'
         language: system
         pass_filenames: false
-        stages: [manual]
+        stages: [pre-commit]
       - id: cargo-fmt
         name: cargo fmt --check
         entry: cargo fmt --all -- --check
