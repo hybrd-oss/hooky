@@ -4,7 +4,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use regex::Regex;
 use serde_json::json;
 use std::ffi::OsStr;
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 struct ArgvContext<'a> {
@@ -72,11 +73,14 @@ fn run_engine(
     argv: Option<&ArgvContext>,
 ) -> Result<Option<Decision>> {
     match engine {
-        EngineConfig::ClaudeHooks { enabled, hooks_dir } => {
+        EngineConfig::ClaudeHooks {
+            enabled,
+            hooks_dirs,
+        } => {
             if !enabled {
                 return Ok(None);
             }
-            run_claude_hook_engine(command, hooks_dir)
+            run_claude_hook_engine(command, hooks_dirs)
         }
         EngineConfig::Dcg {
             enabled,
@@ -106,13 +110,47 @@ fn run_engine(
     }
 }
 
-fn run_claude_hook_engine(command: &str, hooks_dir: &Path) -> Result<Option<Decision>> {
-    let hook_path = hooks_dir.join("block-no-verify.sh");
+fn run_claude_hook_engine(command: &str, hooks_dirs: &[PathBuf]) -> Result<Option<Decision>> {
+    let mut any_allow = false;
 
-    if !hook_path.exists() {
-        return Ok(None);
+    for hooks_dir in hooks_dirs {
+        if !hooks_dir.exists() {
+            continue;
+        }
+
+        let mut scripts: Vec<PathBuf> = fs::read_dir(hooks_dir)
+            .with_context(|| format!("failed to read hooks dir {}", hooks_dir.display()))?
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|ext| ext == "sh"))
+            .collect();
+        scripts.sort();
+
+        for hook_path in scripts {
+            let decision = run_single_hook(command, &hook_path)?;
+            match decision {
+                Some(d) if matches!(d.kind, DecisionKind::Block) => {
+                    return Ok(Some(d));
+                }
+                Some(_) => {
+                    any_allow = true;
+                }
+                None => {}
+            }
+        }
     }
 
+    if any_allow {
+        return Ok(Some(Decision::allow(
+            "claude hook allowed command",
+            "claude_hooks",
+        )));
+    }
+
+    Ok(None)
+}
+
+fn run_single_hook(command: &str, hook_path: &Path) -> Result<Option<Decision>> {
     let payload = json!({
         "tool_input": {
             "command": command,
@@ -123,7 +161,7 @@ fn run_claude_hook_engine(command: &str, hooks_dir: &Path) -> Result<Option<Deci
         serde_json::to_string(&payload).context("failed to serialize hook payload")?;
 
     let mut child = Command::new("/bin/bash")
-        .arg(&hook_path)
+        .arg(hook_path)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -148,14 +186,15 @@ fn run_claude_hook_engine(command: &str, hooks_dir: &Path) -> Result<Option<Deci
         )));
     }
 
+    let rule_id = hook_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(std::string::ToString::to_string);
+
     let reason = combined_text(&output.stdout, &output.stderr)
         .unwrap_or_else(|| "claude hook blocked command".to_string());
 
-    Ok(Some(Decision::block(
-        reason,
-        "claude_hooks",
-        Some("block-no-verify".to_string()),
-    )))
+    Ok(Some(Decision::block(reason, "claude_hooks", rule_id)))
 }
 
 fn run_dcg_engine(
@@ -636,6 +675,134 @@ mod tests {
         let decision = evaluate_argv_command("dangerous-cmd", &["--flag".into()], &config)
             .expect("evaluation should succeed");
         assert_eq!(decision.kind, DecisionKind::Block);
+    }
+
+    #[test]
+    fn claude_hook_engine_skips_missing_dirs() {
+        let result = run_claude_hook_engine(
+            "git commit --no-verify",
+            &[
+                PathBuf::from("/definitely/missing/path"),
+                PathBuf::from("/also/missing"),
+            ],
+        )
+        .expect("should not error on missing dirs");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn claude_hook_engine_runs_all_sh_scripts_in_sorted_order() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let hooks_dir = temp.path().join("hooks");
+        fs::create_dir_all(&hooks_dir).expect("hooks dir");
+
+        // Script b.sh blocks, script a.sh allows — sorted order means a.sh runs first
+        let a_sh = hooks_dir.join("a.sh");
+        let b_sh = hooks_dir.join("b.sh");
+
+        fs::write(&a_sh, "#!/bin/bash\nexit 0\n").expect("write a.sh");
+        fs::write(&b_sh, "#!/bin/bash\necho 'blocked by b'\nexit 1\n").expect("write b.sh");
+        fs::set_permissions(&a_sh, fs::Permissions::from_mode(0o755)).expect("perms a.sh");
+        fs::set_permissions(&b_sh, fs::Permissions::from_mode(0o755)).expect("perms b.sh");
+
+        let result =
+            run_claude_hook_engine("git push --force", &[hooks_dir]).expect("should not error");
+
+        // b.sh blocks, so we should get a Block decision
+        assert!(result.is_some());
+        let decision = result.unwrap();
+        assert_eq!(decision.kind, DecisionKind::Block);
+        assert_eq!(decision.rule_id.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn claude_hook_engine_deny_first_stops_at_first_block() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let hooks_dir = temp.path().join("hooks");
+        fs::create_dir_all(&hooks_dir).expect("hooks dir");
+
+        // block.sh blocks, never.sh would fail the test if reached but it exits 0
+        let block_sh = hooks_dir.join("block.sh");
+        let never_sh = hooks_dir.join("never.sh");
+
+        fs::write(&block_sh, "#!/bin/bash\necho 'blocked'\nexit 1\n").expect("write block.sh");
+        // never.sh also blocks — if reached it would still block, but we want to verify
+        // that execution stopped. We track this by checking rule_id is "block" not "never".
+        fs::write(&never_sh, "#!/bin/bash\necho 'never reached'\nexit 1\n")
+            .expect("write never.sh");
+        fs::set_permissions(&block_sh, fs::Permissions::from_mode(0o755)).expect("perms block.sh");
+        fs::set_permissions(&never_sh, fs::Permissions::from_mode(0o755)).expect("perms never.sh");
+
+        let result =
+            run_claude_hook_engine("git push --force", &[hooks_dir]).expect("should not error");
+
+        let decision = result.expect("should have a decision");
+        assert_eq!(decision.kind, DecisionKind::Block);
+        // Sorted order: block.sh < never.sh, so block.sh runs first and we stop
+        assert_eq!(decision.rule_id.as_deref(), Some("block"));
+    }
+
+    #[test]
+    fn claude_hook_engine_checks_multiple_dirs() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let dir1 = temp.path().join("dir1");
+        let dir2 = temp.path().join("dir2");
+        fs::create_dir_all(&dir1).expect("dir1");
+        fs::create_dir_all(&dir2).expect("dir2");
+
+        // dir1 has an allowing script, dir2 has a blocking one
+        let allow_sh = dir1.join("allow.sh");
+        let block_sh = dir2.join("block.sh");
+
+        fs::write(&allow_sh, "#!/bin/bash\nexit 0\n").expect("write allow.sh");
+        fs::write(&block_sh, "#!/bin/bash\necho 'blocked'\nexit 1\n").expect("write block.sh");
+        fs::set_permissions(&allow_sh, fs::Permissions::from_mode(0o755)).expect("perms allow.sh");
+        fs::set_permissions(&block_sh, fs::Permissions::from_mode(0o755)).expect("perms block.sh");
+
+        let result =
+            run_claude_hook_engine("git push --force", &[dir1, dir2]).expect("should not error");
+
+        let decision = result.expect("should have a decision");
+        assert_eq!(decision.kind, DecisionKind::Block);
+    }
+
+    #[test]
+    fn claude_hook_engine_ignores_non_sh_files() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let hooks_dir = temp.path().join("hooks");
+        fs::create_dir_all(&hooks_dir).expect("hooks dir");
+
+        // Create a .py file and a .sh file that allows
+        let py_script = hooks_dir.join("script.py");
+        let allow_sh = hooks_dir.join("allow.sh");
+
+        // .py file exits 1 but should be ignored
+        fs::write(
+            &py_script,
+            "#!/usr/bin/env python3\nimport sys\nsys.exit(1)\n",
+        )
+        .expect("write .py");
+        fs::write(&allow_sh, "#!/bin/bash\nexit 0\n").expect("write allow.sh");
+        fs::set_permissions(&py_script, fs::Permissions::from_mode(0o755)).expect("perms py");
+        fs::set_permissions(&allow_sh, fs::Permissions::from_mode(0o755)).expect("perms allow.sh");
+
+        let result = run_claude_hook_engine("git commit", &[hooks_dir]).expect("should not error");
+
+        // Only allow.sh runs (exits 0), py file is ignored
+        let decision = result.expect("should have allow decision");
+        assert_eq!(decision.kind, DecisionKind::Allow);
     }
 
     #[test]

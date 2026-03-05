@@ -3,6 +3,38 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+fn deserialize_one_or_many_paths<'de, D>(deserializer: D) -> Result<Vec<PathBuf>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{self, SeqAccess, Visitor};
+    use std::fmt;
+
+    struct PathOrVec;
+
+    impl<'de> Visitor<'de> for PathOrVec {
+        type Value = Vec<PathBuf>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a path string or sequence of path strings")
+        }
+
+        fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
+            Ok(vec![PathBuf::from(value)])
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut paths = Vec::new();
+            while let Some(path) = seq.next_element::<PathBuf>()? {
+                paths.push(path);
+            }
+            Ok(paths)
+        }
+    }
+
+    deserializer.deserialize_any(PathOrVec)
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
     #[serde(default = "default_version")]
@@ -56,8 +88,12 @@ pub enum EngineConfig {
     ClaudeHooks {
         #[serde(default = "default_true")]
         enabled: bool,
-        #[serde(default = "default_claude_hooks_dir")]
-        hooks_dir: PathBuf,
+        #[serde(
+            default = "default_claude_hooks_dirs",
+            alias = "hooks_dir",
+            deserialize_with = "deserialize_one_or_many_paths"
+        )]
+        hooks_dirs: Vec<PathBuf>,
     },
     Dcg {
         #[serde(default)]
@@ -254,8 +290,10 @@ impl Config {
 
         for engine in &mut self.engines {
             match engine {
-                EngineConfig::ClaudeHooks { hooks_dir, .. } => {
-                    *hooks_dir = resolve_path(hooks_dir, base_dir);
+                EngineConfig::ClaudeHooks { hooks_dirs, .. } => {
+                    for dir in hooks_dirs.iter_mut() {
+                        *dir = resolve_path(dir, base_dir);
+                    }
                 }
                 EngineConfig::Dcg { config, .. } => {
                     if let Some(path) = config.as_mut() {
@@ -372,6 +410,27 @@ fn merge_engine(
 fn merge_same_engine(global: &EngineConfig, local: &EngineConfig) -> EngineConfig {
     match (global, local) {
         (
+            EngineConfig::ClaudeHooks {
+                hooks_dirs: g_dirs,
+                enabled: _,
+            },
+            EngineConfig::ClaudeHooks {
+                hooks_dirs: l_dirs,
+                enabled: l_enabled,
+            },
+        ) => {
+            let mut merged_dirs = l_dirs.clone();
+            for dir in g_dirs {
+                if !merged_dirs.contains(dir) {
+                    merged_dirs.push(dir.clone());
+                }
+            }
+            EngineConfig::ClaudeHooks {
+                enabled: *l_enabled,
+                hooks_dirs: merged_dirs,
+            }
+        }
+        (
             EngineConfig::Native {
                 enabled: _g_enabled,
                 rules: g_rules,
@@ -431,8 +490,8 @@ fn default_dcg_cmd() -> String {
     "dcg".to_string()
 }
 
-fn default_claude_hooks_dir() -> PathBuf {
-    PathBuf::from(".claude/hooks")
+fn default_claude_hooks_dirs() -> Vec<PathBuf> {
+    vec![PathBuf::from(".claude/hooks")]
 }
 
 fn default_audit_path() -> PathBuf {
@@ -454,7 +513,7 @@ fn default_engines() -> Vec<EngineConfig> {
     vec![
         EngineConfig::ClaudeHooks {
             enabled: true,
-            hooks_dir: default_claude_hooks_dir(),
+            hooks_dirs: default_claude_hooks_dirs(),
         },
         EngineConfig::Dcg {
             enabled: false,
@@ -810,15 +869,15 @@ mod tests {
             config.audit.log_path,
             config_dir.join(".hooky/.hooky-log.jsonl")
         );
-        let claude_hooks = config
+        let claude_hooks_dirs = config
             .engines
             .iter()
             .find_map(|engine| match engine {
-                EngineConfig::ClaudeHooks { hooks_dir, .. } => Some(hooks_dir),
+                EngineConfig::ClaudeHooks { hooks_dirs, .. } => Some(hooks_dirs),
                 _ => None,
             })
             .expect("default claude hooks engine should exist");
-        assert_eq!(claude_hooks, &config_dir.join(".claude/hooks"));
+        assert_eq!(claude_hooks_dirs, &vec![config_dir.join(".claude/hooks")]);
     }
 
     #[test]
@@ -833,7 +892,7 @@ version: 1
 engines:
   - type: claude_hooks
     enabled: true
-    hooks_dir: custom/hooks
+    hooks_dirs: custom/hooks
   - type: dcg
     enabled: true
     cmd: dcg
@@ -855,15 +914,15 @@ audit:
 
         let config = Config::load(Some(&config_path)).expect("config should load");
 
-        let claude_hooks = config
+        let claude_hooks_dirs = config
             .engines
             .iter()
             .find_map(|engine| match engine {
-                EngineConfig::ClaudeHooks { hooks_dir, .. } => Some(hooks_dir),
+                EngineConfig::ClaudeHooks { hooks_dirs, .. } => Some(hooks_dirs),
                 _ => None,
             })
             .expect("claude hooks should exist");
-        assert_eq!(claude_hooks, &config_dir.join("custom/hooks"));
+        assert_eq!(claude_hooks_dirs, &vec![config_dir.join("custom/hooks")]);
 
         let dcg_config = config
             .engines
@@ -897,5 +956,111 @@ audit:
         );
 
         assert_eq!(config.audit.log_path, config_dir.join("logs/hooky.jsonl"));
+    }
+
+    #[test]
+    fn old_hooks_dir_yaml_deserializes_into_hooks_dirs_vec() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let config_dir = temp.path().join("workspace");
+        fs::create_dir_all(&config_dir).expect("config dir should exist");
+        let config_path = config_dir.join(".hooky.yml");
+
+        let config_yaml = "version: 1\nengines:\n  - type: claude_hooks\n    enabled: true\n    hooks_dir: legacy/hooks\n";
+        fs::write(&config_path, config_yaml).expect("config should be written");
+
+        let config = Config::load(Some(&config_path)).expect("config should load");
+
+        let hooks_dirs = config
+            .engines
+            .iter()
+            .find_map(|engine| match engine {
+                EngineConfig::ClaudeHooks { hooks_dirs, .. } => Some(hooks_dirs),
+                _ => None,
+            })
+            .expect("claude hooks engine should exist");
+        assert_eq!(hooks_dirs, &vec![config_dir.join("legacy/hooks")]);
+    }
+
+    #[test]
+    fn merge_unions_global_and_local_hooks_dirs_without_duplicates() {
+        let global = Config {
+            version: 1,
+            mode: Mode::Enforce,
+            shims: ShimsConfig::default(),
+            engines: vec![EngineConfig::ClaudeHooks {
+                enabled: true,
+                hooks_dirs: vec![
+                    PathBuf::from("/home/user/.claude/hooks"),
+                    PathBuf::from("/shared/hooks"),
+                ],
+            }],
+            combine: CombineConfig::default(),
+            audit: AuditConfig::default(),
+        };
+
+        let local = Config {
+            version: 1,
+            mode: Mode::Enforce,
+            shims: ShimsConfig::default(),
+            engines: vec![EngineConfig::ClaudeHooks {
+                enabled: true,
+                hooks_dirs: vec![
+                    PathBuf::from("/repo/.claude/hooks"),
+                    PathBuf::from("/shared/hooks"),
+                ],
+            }],
+            combine: CombineConfig::default(),
+            audit: AuditConfig::default(),
+        };
+
+        let merged = merge_configs(&global, local);
+
+        let hooks_dirs = merged
+            .engines
+            .iter()
+            .find_map(|engine| match engine {
+                EngineConfig::ClaudeHooks { hooks_dirs, .. } => Some(hooks_dirs),
+                _ => None,
+            })
+            .expect("claude hooks engine should exist");
+
+        // Local dirs first, global-only dirs appended, duplicates removed
+        assert_eq!(
+            hooks_dirs,
+            &vec![
+                PathBuf::from("/repo/.claude/hooks"),
+                PathBuf::from("/shared/hooks"),
+                PathBuf::from("/home/user/.claude/hooks"),
+            ]
+        );
+    }
+
+    #[test]
+    fn hooks_dirs_accepts_list_yaml() {
+        let temp = tempfile::tempdir().expect("tempdir should be created");
+        let config_dir = temp.path().join("workspace");
+        fs::create_dir_all(&config_dir).expect("config dir should exist");
+        let config_path = config_dir.join(".hooky.yml");
+
+        let config_yaml = "version: 1\nengines:\n  - type: claude_hooks\n    enabled: true\n    hooks_dirs:\n      - first/hooks\n      - second/hooks\n";
+        fs::write(&config_path, config_yaml).expect("config should be written");
+
+        let config = Config::load(Some(&config_path)).expect("config should load");
+
+        let hooks_dirs = config
+            .engines
+            .iter()
+            .find_map(|engine| match engine {
+                EngineConfig::ClaudeHooks { hooks_dirs, .. } => Some(hooks_dirs),
+                _ => None,
+            })
+            .expect("claude hooks engine should exist");
+        assert_eq!(
+            hooks_dirs,
+            &vec![
+                config_dir.join("first/hooks"),
+                config_dir.join("second/hooks"),
+            ]
+        );
     }
 }

@@ -33,16 +33,23 @@ pub fn run(config: &Config) -> Result<DoctorReport> {
 
     for engine in &config.engines {
         match engine {
-            EngineConfig::ClaudeHooks { enabled, hooks_dir } => {
-                let hooks_dir_exists = hooks_dir.exists();
+            EngineConfig::ClaudeHooks {
+                enabled,
+                hooks_dirs,
+            } => {
+                let all_missing = hooks_dirs.iter().all(|d| !d.exists());
                 checks.push(DoctorCheck {
                     name: "engine-claude-hooks".to_string(),
                     details: format!(
-                        "enabled={}, hooks_dir={}{}",
+                        "enabled={}, hooks_dirs=[{}]{}",
                         enabled,
-                        hooks_dir.display(),
-                        if *enabled && !hooks_dir_exists {
-                            " (missing hooks dir; engine will be skipped)"
+                        hooks_dirs
+                            .iter()
+                            .map(|d| d.display().to_string())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        if *enabled && all_missing {
+                            " (no hooks dirs found; engine will be skipped)"
                         } else {
                             ""
                         }
@@ -119,14 +126,17 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn doctor_allows_when_enabled_claude_hooks_dir_missing() {
+    fn doctor_allows_when_enabled_claude_hooks_dirs_all_missing() {
         let config = Config {
             version: 1,
             mode: Mode::Enforce,
             shims: crate::hooky::config::ShimsConfig::default(),
             engines: vec![EngineConfig::ClaudeHooks {
                 enabled: true,
-                hooks_dir: PathBuf::from("/definitely/missing/path"),
+                hooks_dirs: vec![
+                    PathBuf::from("/definitely/missing/path"),
+                    PathBuf::from("/also/missing"),
+                ],
             }],
             combine: CombineConfig::default(),
             audit: AuditConfig {
@@ -138,5 +148,36 @@ mod tests {
         assert!(report.ok);
         assert_eq!(report.checks[2].name, "engine-claude-hooks");
         assert!(report.checks[2].details.contains("engine will be skipped"));
+        assert!(report.checks[2]
+            .details
+            .contains("/definitely/missing/path"));
+        assert!(report.checks[2].details.contains("/also/missing"));
+    }
+
+    #[test]
+    fn doctor_shows_all_hooks_dirs_in_details() {
+        let config = Config {
+            version: 1,
+            mode: Mode::Enforce,
+            shims: crate::hooky::config::ShimsConfig::default(),
+            engines: vec![EngineConfig::ClaudeHooks {
+                enabled: true,
+                hooks_dirs: vec![
+                    PathBuf::from("/first/hooks"),
+                    PathBuf::from("/second/hooks"),
+                ],
+            }],
+            combine: CombineConfig::default(),
+            audit: AuditConfig {
+                log_path: PathBuf::from(".hooky/.hooky-log.jsonl"),
+            },
+        };
+
+        let report = run(&config).expect("doctor should return report");
+        let check = &report.checks[2];
+        assert_eq!(check.name, "engine-claude-hooks");
+        assert!(check.details.contains("hooks_dirs=["));
+        assert!(check.details.contains("/first/hooks"));
+        assert!(check.details.contains("/second/hooks"));
     }
 }

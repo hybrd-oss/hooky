@@ -365,6 +365,19 @@ fn run_init(
         .with_context(|| format!("failed to create {}", runtime_dir.display()))?;
 
     let mut config = Config::load(Some(&config_path))?;
+
+    // For global init, ensure the ClaudeHooks engine points to the absolute
+    // ~/.claude/hooks path so it resolves correctly from any working directory.
+    if global {
+        let home = dirs::home_dir().ok_or_else(|| anyhow!("failed to determine home directory"))?;
+        let global_hooks = home.join(".claude").join("hooks");
+        for engine in &mut config.engines {
+            if let EngineConfig::ClaudeHooks { hooks_dirs, .. } = engine {
+                *hooks_dirs = vec![global_hooks.clone()];
+            }
+        }
+    }
+
     upsert_dcg_engine(
         &mut config,
         true,
