@@ -2,6 +2,7 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 use std::fs;
 use std::path::Path;
+use std::process::Command as ProcessCommand;
 
 fn write_native_config(config_path: &Path, audit_path: &Path) {
     let config = format!(
@@ -26,6 +27,44 @@ audit:
     );
 
     fs::write(config_path, config).expect("failed to write test config");
+}
+
+fn write_blocking_version_config(config_path: &Path, audit_path: &Path) {
+    let config = format!(
+        "version: 1
+mode: enforce
+engines:
+  - type: native
+    enabled: true
+    rules:
+      - id: block-version
+        action: block
+        pattern: \"--version\"
+        rewrite: ~
+audit:
+  log_path: \"{}\"
+",
+        audit_path.display()
+    );
+
+    fs::write(config_path, config).expect("failed to write blocking test config");
+}
+
+fn write_allowing_config(config_path: &Path, audit_path: &Path) {
+    let config = format!(
+        "version: 1
+mode: enforce
+engines:
+  - type: native
+    enabled: false
+    rules: []
+audit:
+  log_path: \"{}\"
+",
+        audit_path.display()
+    );
+
+    fs::write(config_path, config).expect("failed to write allowing test config");
 }
 
 fn write_global_native_config(home_dir: &Path) {
@@ -176,6 +215,90 @@ fn install_shims_prefers_local_runtime_dir_over_global_config() {
 
     assert!(temp_repo.path().join(".hooky/shims/hooky-shell").exists());
     assert!(!temp_home.path().join(".hooky/shims/hooky-shell").exists());
+}
+
+#[test]
+fn installed_global_shim_prefers_local_config_at_execution_time() {
+    let temp_home = tempfile::tempdir().expect("tempdir should be created");
+    let temp_repo = tempfile::tempdir().expect("tempdir should be created");
+    let global_config_path = temp_home.path().join(".hooky/config.yml");
+    let local_config_path = temp_repo.path().join(".hooky.yml");
+    let global_shims_dir = temp_home.path().join(".hooky/shims");
+
+    fs::create_dir_all(temp_home.path().join(".hooky")).expect("global .hooky dir should exist");
+    fs::create_dir_all(temp_repo.path().join(".hooky")).expect("local .hooky dir should exist");
+    write_allowing_config(&global_config_path, Path::new(".hooky-log.jsonl"));
+    write_blocking_version_config(
+        &local_config_path,
+        &temp_repo.path().join(".hooky/.hooky-log.jsonl"),
+    );
+
+    Command::new(env!("CARGO_BIN_EXE_hooky"))
+        .env("HOME", temp_home.path())
+        .current_dir(temp_repo.path())
+        .args([
+            "install-shims",
+            "--dir",
+            global_shims_dir
+                .to_str()
+                .expect("path should be valid utf-8"),
+        ])
+        .assert()
+        .success();
+
+    let output = ProcessCommand::new(global_shims_dir.join("git"))
+        .env("HOME", temp_home.path())
+        .current_dir(temp_repo.path())
+        .arg("--version")
+        .output()
+        .expect("shim should execute");
+
+    assert!(
+        !output.status.success(),
+        "local config should block the command"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("hooky Block:"));
+    assert!(stderr.contains("rule: block-version"));
+}
+
+#[test]
+fn installed_global_shim_falls_back_to_global_config_without_local_file() {
+    let temp_home = tempfile::tempdir().expect("tempdir should be created");
+    let temp_repo = tempfile::tempdir().expect("tempdir should be created");
+    let global_config_path = temp_home.path().join(".hooky/config.yml");
+    let global_shims_dir = temp_home.path().join(".hooky/shims");
+
+    fs::create_dir_all(temp_home.path().join(".hooky")).expect("global .hooky dir should exist");
+    write_blocking_version_config(&global_config_path, Path::new(".hooky-log.jsonl"));
+
+    Command::new(env!("CARGO_BIN_EXE_hooky"))
+        .env("HOME", temp_home.path())
+        .current_dir(temp_repo.path())
+        .args([
+            "install-shims",
+            "--dir",
+            global_shims_dir
+                .to_str()
+                .expect("path should be valid utf-8"),
+        ])
+        .assert()
+        .success();
+
+    let output = ProcessCommand::new(global_shims_dir.join("git"))
+        .env("HOME", temp_home.path())
+        .current_dir(temp_repo.path())
+        .arg("--version")
+        .output()
+        .expect("shim should execute");
+
+    assert!(
+        !output.status.success(),
+        "global config should block when no local config exists"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("hooky Block:"));
+    assert!(stderr.contains("rule: block-version"));
 }
 
 #[test]
