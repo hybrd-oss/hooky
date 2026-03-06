@@ -37,6 +37,10 @@ hooky run -- claude
 
 That's it. Hooky intercepts commands at the shell level and enforces rules before anything runs.
 
+Shim location follows the active config scope:
+- global-only config: `~/.hooky/shims`
+- repo-local config: `./.hooky/shims`
+
 > **Verify your setup** — `hooky doctor` checks that DCG is installed, shims are active, and config is valid.
 
 ---
@@ -108,6 +112,10 @@ shims:
 hooky install-shims --force
 ```
 
+Without `--dir`, Hooky installs shims into the active scope's runtime directory:
+- `~/.hooky/shims` when only global config is active
+- `./.hooky/shims` when a local `.hooky.yml` is active
+
 ---
 
 ## Verify your setup
@@ -127,7 +135,10 @@ hooky init --global   # ~/.hooky/config.yml — defaults for all repos
 hooky init            # .hooky.yml — overrides for this repo
 ```
 
-When both exist, the project config overrides matching engine settings from global.
+When both exist:
+- project config overrides matching engine settings from global
+- local `shims.commands` replaces the global shim list
+- generated shims check `./.hooky.yml` first, then `~/.hooky/config.yml`
 
 ---
 

@@ -5,7 +5,7 @@ Hooky's configuration lives in:
 - **Project-local**: `.hooky.yml` (in your repo root)
 - **Global**: `~/.hooky/config.yml`
 
-When both exist, project settings override matching engine settings from global. Shim lists are merged.
+When both exist, project settings override matching engine settings from global. The local `shims.commands` list replaces the global shim list.
 
 Bootstrap either with:
 
@@ -18,7 +18,17 @@ hooky init --global     # global
 
 ## Shims
 
-Shims determine which commands get intercepted. Hooky replaces each listed binary with a wrapper script in `.hooky/shims/` that runs the policy pipeline before executing the real binary.
+Shims determine which commands get intercepted. Hooky replaces each listed binary with a wrapper script in the active runtime directory:
+
+- `~/.hooky/shims/` when only global config is active
+- `./.hooky/shims/` when a local `.hooky.yml` is active
+- `--dir <path>` overrides both for `hooky install-shims`
+
+Each wrapper discovers config at execution time in this order:
+
+1. `./.hooky.yml`
+2. `~/.hooky/config.yml`
+3. No explicit config flag, which falls back to Hooky's defaults
 
 **Default shims:** `git`, `rm`, `mv`, `curl`, `bash`, `sh`
 
@@ -45,6 +55,8 @@ After changing shim targets, regenerate:
 ```bash
 hooky install-shims --force
 ```
+
+`hooky run` uses the same scope-aware default when it auto-installs shims.
 
 ---
 

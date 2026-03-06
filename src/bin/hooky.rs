@@ -510,20 +510,21 @@ fn build_safe_shell_script(hooky_bin: &Path, config_path: Option<&str>) -> Resul
     let bin = hooky_bin
         .to_str()
         .ok_or_else(|| anyhow!("hooky binary path is not valid UTF-8"))?;
-    let config_arg = build_config_arg(config_path);
+    let config_setup = build_config_args_setup(config_path);
 
     Ok(format!(
         "#!/bin/bash
 set -euo pipefail
 
 HOOKY_BIN=\"{bin}\"
+{config_setup}
 
 if [[ \"${{1:-}}\" == \"-c\" && -n \"${{2:-}}\" ]]; then
-  \"$HOOKY_BIN\" check-shell --quiet {config_arg}--cmd \"$2\"
+  \"$HOOKY_BIN\" check-shell --quiet \"${{HOOKY_CONFIG_ARGS[@]}}\" --cmd \"$2\"
 elif [[ \"${{1:-}}\" == \"-lc\" && -n \"${{2:-}}\" ]]; then
-  \"$HOOKY_BIN\" check-shell --quiet {config_arg}--cmd \"$2\"
+  \"$HOOKY_BIN\" check-shell --quiet \"${{HOOKY_CONFIG_ARGS[@]}}\" --cmd \"$2\"
 elif [[ \"${{1:-}}\" == \"-l\" && \"${{2:-}}\" == \"-c\" && -n \"${{3:-}}\" ]]; then
-  \"$HOOKY_BIN\" check-shell --quiet {config_arg}--cmd \"$3\"
+  \"$HOOKY_BIN\" check-shell --quiet \"${{HOOKY_CONFIG_ARGS[@]}}\" --cmd \"$3\"
 fi
 
 exec /bin/bash \"$@\"
@@ -543,24 +544,33 @@ fn build_command_shim_script(
     let bin = hooky_bin
         .to_str()
         .ok_or_else(|| anyhow!("hooky binary path is not valid UTF-8"))?;
-    let config_arg = build_config_arg(config_path);
+    let config_setup = build_config_args_setup(config_path);
 
     Ok(format!(
         "#!/bin/bash
 set -euo pipefail
 
 HOOKY_BIN=\"{bin}\"
+{config_setup}
 
-\"$HOOKY_BIN\" check-argv --quiet {config_arg}--bin \"{command_name}\" -- \"$@\"
+\"$HOOKY_BIN\" check-argv --quiet \"${{HOOKY_CONFIG_ARGS[@]}}\" --bin \"{command_name}\" -- \"$@\"
 exec \"{real}\" \"$@\"
 "
     ))
 }
 
-fn build_config_arg(config_path: Option<&str>) -> String {
-    config_path
-        .map(|path| format!("--config \"{path}\" "))
-        .unwrap_or_default()
+fn build_config_args_setup(config_path: Option<&str>) -> String {
+    match config_path {
+        Some(path) => format!("HOOKY_CONFIG_ARGS=(--config \"{path}\")\n"),
+        None => "HOOKY_CONFIG_ARGS=()
+if [[ -f \".hooky.yml\" ]]; then
+  HOOKY_CONFIG_ARGS=(--config \".hooky.yml\")
+elif [[ -f \"$HOME/.hooky/config.yml\" ]]; then
+  HOOKY_CONFIG_ARGS=(--config \"$HOME/.hooky/config.yml\")
+fi
+"
+        .to_string(),
+    }
 }
 
 fn write_executable_script(path: &Path, contents: &str, force: bool) -> Result<()> {
@@ -1214,9 +1224,25 @@ mod tests {
             .expect("script generation");
 
         assert!(script.contains("HOOKY_BIN=\"/tmp/hooky\""));
-        assert!(script.contains("--config \"/tmp/hooky.yml\" --cmd"));
+        assert!(script.contains("HOOKY_CONFIG_ARGS=(--config \"/tmp/hooky.yml\")"));
+        assert!(script.contains("\"${HOOKY_CONFIG_ARGS[@]}\" --cmd"));
         assert!(!script.contains("${HOOKY_BIN:-"));
         assert!(!script.contains("${HOOKY_CONFIG:-"));
+    }
+
+    #[test]
+    fn safe_shell_script_discovers_local_then_global_config() {
+        let script =
+            build_safe_shell_script(Path::new("/tmp/hooky"), None).expect("script generation");
+
+        assert!(script.contains("HOOKY_CONFIG_ARGS=()"));
+        assert!(script.contains("if [[ -f \".hooky.yml\" ]]; then"));
+        assert!(script.contains("HOOKY_CONFIG_ARGS=(--config \".hooky.yml\")"));
+        assert!(script.contains("elif [[ -f \"$HOME/.hooky/config.yml\" ]]; then"));
+        assert!(script.contains("HOOKY_CONFIG_ARGS=(--config \"$HOME/.hooky/config.yml\")"));
+        assert!(script.contains(
+            "\"$HOOKY_BIN\" check-shell --quiet \"${HOOKY_CONFIG_ARGS[@]}\" --cmd \"$2\""
+        ));
     }
 
     #[test]
@@ -1243,9 +1269,30 @@ mod tests {
         .expect("script generation");
 
         assert!(script.contains("HOOKY_BIN=\"/tmp/hooky\""));
-        assert!(script.contains("check-argv --quiet --config \"/tmp/hooky.yml\" --bin \"git\""));
+        assert!(script.contains("HOOKY_CONFIG_ARGS=(--config \"/tmp/hooky.yml\")"));
+        assert!(script.contains("check-argv --quiet \"${HOOKY_CONFIG_ARGS[@]}\" --bin \"git\""));
         assert!(!script.contains("${HOOKY_BIN:-"));
         assert!(!script.contains("${HOOKY_CONFIG:-"));
+    }
+
+    #[test]
+    fn command_shim_discovers_local_then_global_config() {
+        let script = build_command_shim_script(
+            "git",
+            Path::new("/usr/bin/git"),
+            Path::new("/tmp/hooky"),
+            None,
+        )
+        .expect("script generation");
+
+        assert!(script.contains("HOOKY_CONFIG_ARGS=()"));
+        assert!(script.contains("if [[ -f \".hooky.yml\" ]]; then"));
+        assert!(script.contains("HOOKY_CONFIG_ARGS=(--config \".hooky.yml\")"));
+        assert!(script.contains("elif [[ -f \"$HOME/.hooky/config.yml\" ]]; then"));
+        assert!(script.contains("HOOKY_CONFIG_ARGS=(--config \"$HOME/.hooky/config.yml\")"));
+        assert!(script.contains(
+            "\"$HOOKY_BIN\" check-argv --quiet \"${HOOKY_CONFIG_ARGS[@]}\" --bin \"git\" -- \"$@\""
+        ));
     }
 
     #[test]

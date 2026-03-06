@@ -11,7 +11,7 @@ Hooky uses **PATH shims** and a **shell wrapper** — not syscall sandboxing. Co
 ```
 hooky run -- <program>
       │
-      ├── prepends .hooky/shims to PATH
+      ├── prepends the active shims dir to PATH
       └── sets SHELL to hooky-shell wrapper
 
 When the program runs a shimmed command (e.g. git):
@@ -19,8 +19,9 @@ When the program runs a shimmed command (e.g. git):
   git commit ...
       │
       ▼
-  .hooky/shims/git          ← shim script
+  active-shims/git          ← shim script
       │
+      ├── resolve config: ./.hooky.yml -> ~/.hooky/config.yml
       ├── hooky check-argv git commit ...
       │         │
       │         ▼
@@ -33,7 +34,7 @@ When the program runs a shimmed command (e.g. git):
       └── print reason to stderr, exit non-zero
 ```
 
-For shell-string invocations (`bash -c "..."`, `bash -lc "..."`), the `hooky-shell` wrapper calls `hooky check-shell` before executing.
+For shell-string invocations (`bash -c "..."`, `bash -lc "..."`), the `hooky-shell` wrapper resolves config using the same local-then-global order before calling `hooky check-shell`.
 
 ---
 
@@ -91,6 +92,10 @@ Every decision is appended to `.hooky/.hooky-log.jsonl`. Entries include:
 - Best-effort secret redaction (tokens, passwords, keys in env vars and command args)
 
 Log location resolves upward from the current working directory to the nearest `.hooky/` directory, so nested repo work still lands in the right place.
+
+Shim location follows the active config scope:
+- global-only config uses `~/.hooky/shims`
+- local config uses `./.hooky/shims`
 
 ---
 
