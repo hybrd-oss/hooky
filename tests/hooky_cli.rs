@@ -28,6 +28,12 @@ audit:
     fs::write(config_path, config).expect("failed to write test config");
 }
 
+fn write_global_native_config(home_dir: &Path) {
+    let hooky_dir = home_dir.join(".hooky");
+    fs::create_dir_all(&hooky_dir).expect("global .hooky dir should exist");
+    write_native_config(&hooky_dir.join("config.yml"), Path::new(".hooky-log.jsonl"));
+}
+
 #[test]
 fn check_shell_blocks_without_running_git() {
     let temp = tempfile::tempdir().expect("tempdir should be created");
@@ -127,6 +133,49 @@ fn install_shims_creates_expected_files() {
             "expected shim {file} to exist"
         );
     }
+}
+
+#[test]
+fn install_shims_defaults_to_global_runtime_dir_when_only_global_config_exists() {
+    let temp_home = tempfile::tempdir().expect("tempdir should be created");
+    let temp_repo = tempfile::tempdir().expect("tempdir should be created");
+    write_global_native_config(temp_home.path());
+
+    Command::new(env!("CARGO_BIN_EXE_hooky"))
+        .env("HOME", temp_home.path())
+        .current_dir(temp_repo.path())
+        .arg("install-shims")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            temp_home.path().join(".hooky/shims").display().to_string(),
+        ));
+
+    assert!(temp_home.path().join(".hooky/shims/hooky-shell").exists());
+    assert!(!temp_repo.path().join(".hooky/shims").exists());
+}
+
+#[test]
+fn install_shims_prefers_local_runtime_dir_over_global_config() {
+    let temp_home = tempfile::tempdir().expect("tempdir should be created");
+    let temp_repo = tempfile::tempdir().expect("tempdir should be created");
+    let local_config_path = temp_repo.path().join(".hooky.yml");
+    let local_audit_path = temp_repo.path().join(".hooky/.hooky-log.jsonl");
+
+    write_global_native_config(temp_home.path());
+    fs::create_dir_all(temp_repo.path().join(".hooky")).expect("local .hooky dir should exist");
+    write_native_config(&local_config_path, &local_audit_path);
+
+    Command::new(env!("CARGO_BIN_EXE_hooky"))
+        .env("HOME", temp_home.path())
+        .current_dir(temp_repo.path())
+        .arg("install-shims")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"dir\": \"./.hooky/shims\""));
+
+    assert!(temp_repo.path().join(".hooky/shims/hooky-shell").exists());
+    assert!(!temp_home.path().join(".hooky/shims/hooky-shell").exists());
 }
 
 #[test]

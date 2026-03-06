@@ -18,6 +18,21 @@ use std::process::{Command, Stdio};
 const DEFAULT_SHIMS_DIR: &str = ".hooky/shims";
 const REQUIRED_GITIGNORE_PATTERNS: [&str; 1] = [".hooky/"];
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RuntimeScope {
+    Global,
+    Project,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RuntimePaths {
+    scope: RuntimeScope,
+    config_path: PathBuf,
+    runtime_dir: PathBuf,
+    audit_log_path: PathBuf,
+    shims_dir: PathBuf,
+}
+
 #[derive(Parser)]
 #[command(name = "hooky")]
 #[command(about = "Configurable command firewall for shells, agents, and automation")]
@@ -281,7 +296,8 @@ fn run_program(
     }
 
     let current_exe = std::env::current_exe().context("failed to resolve current executable")?;
-    let shims_path = shims_dir.map_or_else(|| PathBuf::from(DEFAULT_SHIMS_DIR), Path::to_path_buf);
+    let runtime_paths = resolve_runtime_paths(config_path)?;
+    let shims_path = shims_dir.map_or_else(|| runtime_paths.shims_dir.clone(), Path::to_path_buf);
     let shim_config_path = config_path.map(|path| {
         fs::canonicalize(path)
             .unwrap_or_else(|_| path.to_path_buf())
@@ -339,40 +355,26 @@ fn run_init(
         bail!("--config cannot be combined with --global");
     }
 
-    let (config_path, runtime_dir, audit_log_path, scope) = if global {
-        let home = dirs::home_dir().ok_or_else(|| anyhow!("failed to determine home directory"))?;
-        let hooky_dir = home.join(".hooky");
-        (
-            hooky_dir.join("config.yml"),
-            hooky_dir,
-            PathBuf::from(".hooky-log.jsonl"),
-            "global".to_string(),
-        )
+    let runtime_paths = if global {
+        global_runtime_paths()?
     } else {
-        let config_path =
-            config_path.map_or_else(|| PathBuf::from(".hooky.yml"), Path::to_path_buf);
-        let base_dir = config_path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
-        (
-            config_path,
-            base_dir.join(".hooky"),
-            PathBuf::from(".hooky/.hooky-log.jsonl"),
-            "project".to_string(),
-        )
+        project_runtime_paths(config_path)
+    };
+    let scope = match runtime_paths.scope {
+        RuntimeScope::Global => "global".to_string(),
+        RuntimeScope::Project => "project".to_string(),
     };
 
-    if let Some(parent) = config_path.parent() {
+    if let Some(parent) = runtime_paths.config_path.parent() {
         if !parent.as_os_str().is_empty() {
             fs::create_dir_all(parent)
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
     }
-    fs::create_dir_all(&runtime_dir)
-        .with_context(|| format!("failed to create {}", runtime_dir.display()))?;
+    fs::create_dir_all(&runtime_paths.runtime_dir)
+        .with_context(|| format!("failed to create {}", runtime_paths.runtime_dir.display()))?;
 
-    let mut config = Config::load(Some(&config_path))?;
+    let mut config = Config::load(Some(&runtime_paths.config_path))?;
 
     // For global init, ensure the ClaudeHooks engine points to the absolute
     // ~/.claude/hooks path so it resolves correctly from any working directory.
@@ -394,16 +396,19 @@ fn run_init(
         with_packs,
         explain,
     );
-    config.audit.log_path = audit_log_path;
-    write_config_file(&config_path, &config)?;
+    config
+        .audit
+        .log_path
+        .clone_from(&runtime_paths.audit_log_path);
+    write_config_file(&runtime_paths.config_path, &config)?;
 
     let resolved_dcg_cmd = dcg_cmd.unwrap_or("dcg");
     let dcg_found = program_exists(resolved_dcg_cmd);
 
     let response = CliResponse::success(InitResponse {
         scope,
-        config_path,
-        runtime_dir,
+        config_path: runtime_paths.config_path,
+        runtime_dir: runtime_paths.runtime_dir,
         dcg_enabled: true,
         dcg_cmd: resolved_dcg_cmd.to_string(),
         dcg_config: dcg_config.map(Path::to_path_buf),
@@ -452,7 +457,8 @@ fn install_shims_command(dir: Option<&Path>, force: bool) -> Result<()> {
     let config = load_effective_config(None)?;
 
     let current_exe = std::env::current_exe().context("failed to resolve current executable")?;
-    let target_dir = dir.map_or_else(|| PathBuf::from(DEFAULT_SHIMS_DIR), Path::to_path_buf);
+    let runtime_paths = resolve_runtime_paths(None)?;
+    let target_dir = dir.map_or_else(|| runtime_paths.shims_dir, Path::to_path_buf);
 
     let installed = install_shims(
         &target_dir,
@@ -659,6 +665,79 @@ fn load_effective_config(config_path: Option<&Path>) -> Result<Config> {
 
     config.audit.log_path = resolve_audit_log_path(&config.audit.log_path)?;
     Ok(config)
+}
+
+fn resolve_runtime_paths(config_path: Option<&Path>) -> Result<RuntimePaths> {
+    match config_path {
+        Some(path) => runtime_paths_for_config(path),
+        None => detect_default_runtime_paths(),
+    }
+}
+
+fn detect_default_runtime_paths() -> Result<RuntimePaths> {
+    let local_config = Path::new(".hooky.yml");
+    if local_config.exists() {
+        return Ok(project_runtime_paths(Some(local_config)));
+    }
+
+    let global = global_runtime_paths()?;
+    if global.config_path.exists() {
+        return Ok(global);
+    }
+
+    Ok(project_runtime_paths(None))
+}
+
+fn runtime_paths_for_config(config_path: &Path) -> Result<RuntimePaths> {
+    let candidate = config_path.to_path_buf();
+    let global = global_runtime_paths()?;
+    if paths_refer_to_same_location(&candidate, &global.config_path) {
+        return Ok(global);
+    }
+
+    Ok(project_runtime_paths(Some(config_path)))
+}
+
+fn global_runtime_paths() -> Result<RuntimePaths> {
+    let hooky_dir = home_hooky_dir()?;
+    Ok(RuntimePaths {
+        scope: RuntimeScope::Global,
+        config_path: hooky_dir.join("config.yml"),
+        runtime_dir: hooky_dir.clone(),
+        audit_log_path: PathBuf::from(".hooky-log.jsonl"),
+        shims_dir: hooky_dir.join("shims"),
+    })
+}
+
+fn project_runtime_paths(config_path: Option<&Path>) -> RuntimePaths {
+    let config_path = config_path.map_or_else(|| PathBuf::from(".hooky.yml"), Path::to_path_buf);
+    let base_dir = config_parent_dir(&config_path);
+    RuntimePaths {
+        scope: RuntimeScope::Project,
+        config_path,
+        runtime_dir: base_dir.join(".hooky"),
+        audit_log_path: PathBuf::from(".hooky/.hooky-log.jsonl"),
+        shims_dir: base_dir.join(DEFAULT_SHIMS_DIR),
+    }
+}
+
+fn config_parent_dir(config_path: &Path) -> PathBuf {
+    config_path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+}
+
+fn home_hooky_dir() -> Result<PathBuf> {
+    Ok(dirs::home_dir()
+        .ok_or_else(|| anyhow!("failed to determine home directory"))?
+        .join(".hooky"))
+}
+
+fn paths_refer_to_same_location(left: &Path, right: &Path) -> bool {
+    let left = fs::canonicalize(left).unwrap_or_else(|_| left.to_path_buf());
+    let right = fs::canonicalize(right).unwrap_or_else(|_| right.to_path_buf());
+    left == right
 }
 
 fn resolve_audit_log_path(path: &Path) -> Result<PathBuf> {
