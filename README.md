@@ -18,6 +18,96 @@ Works with **Codex**, **Claude Code**, or anything that runs shell commands.
 
 ---
 
+## How it works
+
+```
+  ┌─────────────────────────────────────────────────────────────┐
+  │                    hooky run -- codex                        │
+  │                                                             │
+  │   • Prepends .hooky/shims/ to the front of PATH             │
+  │   • Sets SHELL to .hooky/shims/hooky-shell                  │
+  │   • Spawns the agent as a child process                     │
+  └──────────────────────────┬──────────────────────────────────┘
+                             │
+                    Agent spawns a command
+                             │
+              ┌──────────────┴──────────────┐
+              │                             │
+              ▼                             ▼
+  ┌──────────────────────┐      ┌───────────────────────┐
+  │   Direct command      │      │   Shell string         │
+  │   e.g. git commit ... │      │   e.g. bash -c "..."   │
+  └──────────┬───────────┘      └───────────┬───────────┘
+             │                              │
+             ▼                              ▼
+  ┌─────────────────────────────────────────────────────────────┐
+  │                       PATH Shims                            │
+  │                                                             │
+  │   Hooky places small stand-in scripts ("shims") for each    │
+  │   command in front of the real binaries on PATH. When the   │
+  │   agent calls "git", it hits the shim first — not the real  │
+  │   git. The agent doesn't know the difference.               │
+  │                                                             │
+  │   .hooky/shims/                                             │
+  │   ├── git            ← intercepts git commands              │
+  │   ├── rm             ← intercepts file deletions            │
+  │   ├── mv             ← intercepts file moves                │
+  │   ├── curl           ← intercepts network requests          │
+  │   ├── bash / sh      ← intercepts shell invocations         │
+  │   └── hooky-shell    ← catches "bash -c ..." style calls    │
+  │                                                             │
+  │   Each shim does three things:                              │
+  │                                                             │
+  │     1. Loads your rules (project config, then global)       │
+  │     2. Asks Hooky to check the command against them         │
+  │     3. Only runs the real command if Hooky says it's OK     │
+  │                                                             │
+  └──────────────────────────┬──────────────────────────────────┘
+                             │
+                             ▼
+  ┌─────────────────────────────────────────────────────────────┐
+  │                     Policy Pipeline                         │
+  │                                                             │
+  │   Engines evaluated in parallel (deny-first):               │
+  │                                                             │
+  │     ┌──────────┐  ┌──────────────┐  ┌─────┐  ┌──────────┐  │
+  │     │  native  │  │ claude_hooks │  │ dcg │  │ local    │  │
+  │     │  (regex) │  │ (.claude/    │  │     │  │ hooks    │  │
+  │     │          │  │   hooks/)    │  │     │  │          │  │
+  │     └────┬─────┘  └──────┬──────┘  └──┬──┘  └────┬─────┘  │
+  │          └───────┬───────┴─────┬──────┘          │         │
+  │                  └─────┬───────┴─────────────────┘         │
+  │                        ▼                                    │
+  │                   ┌─────────┐                               │
+  │                   │ Combiner│                               │
+  │                   └────┬────┘                               │
+  │                        │                                    │
+  └────────────────────────┼────────────────────────────────────┘
+                           │
+                ┌──────────┴──────────┐
+                │                     │
+                ▼                     ▼
+          ┌──────────┐         ┌──────────┐
+          │  ALLOW   │         │  BLOCK   │
+          │          │         │          │
+          │ exec the │         │ stderr + │
+          │ real bin │         │ exit 1   │
+          └─────┬────┘         └─────┬────┘
+                │                    │
+                └────────┬───────────┘
+                         ▼
+                  ┌──────────────┐
+                  │  Audit Log   │
+                  │  .hooky/     │
+                  │  .hooky-log  │
+                  │  .jsonl      │
+                  └──────────────┘
+```
+
+All decisions (allow and block) are logged. Shell-string commands (`bash -c "..."`) follow the same pipeline via the `hooky-shell` wrapper.
+
+---
+
 ## Setup
 
 ```bash
